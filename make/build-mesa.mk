@@ -31,20 +31,22 @@ $(eval $(call rules-source,mesa-upstream,$(SRCDIR)/mesa))
 MESA_SRC := $(OBJ)/src-mesa
 MESA_ORIGIN := $(MESA_UPSTREAM_ORIGIN)
 
-MESA_LIBDRM := $(MESA_SRC)/subprojects/libdrm-2.4.133
-MESA_LIBDRM_ARCHIVE := $(MESA_XCB_DOWNLOADS)/libdrm-2.4.133.tar.xz
+MESA_LIBDRM := $(MESA_SRC)/subprojects/libdrm-2.4.134
+MESA_LIBDRM_ARCHIVE := $(MESA_XCB_DOWNLOADS)/libdrm-2.4.134.tar.xz
+MESA_LIBDRM_WRAP := $(SRCDIR)/make/libdrm.wrap
 
 $(MESA_LIBDRM_ARCHIVE):
 	mkdir -p "$(dir $@)"
 	curl --fail --location --retry 3 --output "$@.tmp" \
-	    https://dri.freedesktop.org/libdrm/libdrm-2.4.133.tar.xz
-	printf '%s  %s\n' fc68f9d0ba2ea63c9432a299e14fea09fad7a8a66e8039fcd7802ca59f77b4f5 "$@.tmp" | sha256sum --check
+	    https://dri.freedesktop.org/libdrm/libdrm-2.4.134.tar.xz
+	printf '%s  %s\n' ac5e74d157830eb8bee44c6a6bf3ad49774ef0dd2a72bdad74a8f20308b52a95 "$@.tmp" | sha256sum --check
 	mv "$@.tmp" "$@"
 
-$(OBJ)/.mesa-post-source: $(OBJ)/.mesa-upstream-post-source $(SRCDIR)/make/build-mesa.mk $(MESA_LIBDRM_ARCHIVE)
-	rsync -arc --delete --exclude=/subprojects/libdrm-2.4.133 "$(MESA_UPSTREAM_SRC)/" "$(MESA_SRC)/"
+$(OBJ)/.mesa-post-source: $(OBJ)/.mesa-upstream-post-source $(SRCDIR)/make/build-mesa.mk $(MESA_LIBDRM_ARCHIVE) $(MESA_LIBDRM_WRAP)
+	rsync -arc --delete --exclude=/subprojects/libdrm-2.4.134 "$(MESA_UPSTREAM_SRC)/" "$(MESA_SRC)/"
 	mkdir -p "$(MESA_LIBDRM)"
 	tar -xf "$(MESA_LIBDRM_ARCHIVE)" --strip-components=1 -C "$(MESA_LIBDRM)"
+	cp "$(MESA_LIBDRM_WRAP)" "$(MESA_SRC)/subprojects/libdrm.wrap"
 	touch "$@"
 
 $(OBJ)/.mesa-source: $(OBJ)/.mesa-post-source
