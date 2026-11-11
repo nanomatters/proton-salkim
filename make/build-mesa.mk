@@ -33,6 +33,7 @@ MESA_ORIGIN := $(MESA_UPSTREAM_ORIGIN)
 
 MESA_LIBDRM := $(MESA_SRC)/subprojects/libdrm-2.4.134
 MESA_LIBDRM_ARCHIVE := $(MESA_XCB_DOWNLOADS)/libdrm-2.4.134.tar.xz
+MESA_LIBDRM_PATCH := $(SRCDIR)/patches/libdrm/amdgpu-use-augmented-va-tree.patch
 MESA_LIBDRM_WRAP := $(SRCDIR)/make/libdrm.wrap
 
 $(MESA_LIBDRM_ARCHIVE):
@@ -42,10 +43,11 @@ $(MESA_LIBDRM_ARCHIVE):
 	printf '%s  %s\n' ac5e74d157830eb8bee44c6a6bf3ad49774ef0dd2a72bdad74a8f20308b52a95 "$@.tmp" | sha256sum --check
 	mv "$@.tmp" "$@"
 
-$(OBJ)/.mesa-post-source: $(OBJ)/.mesa-upstream-post-source $(SRCDIR)/make/build-mesa.mk $(MESA_LIBDRM_ARCHIVE) $(MESA_LIBDRM_WRAP)
+$(OBJ)/.mesa-post-source: $(OBJ)/.mesa-upstream-post-source $(SRCDIR)/make/build-mesa.mk $(MESA_LIBDRM_ARCHIVE) $(MESA_LIBDRM_PATCH) $(MESA_LIBDRM_WRAP)
 	rsync -arc --delete --exclude=/subprojects/libdrm-2.4.134 "$(MESA_UPSTREAM_SRC)/" "$(MESA_SRC)/"
 	mkdir -p "$(MESA_LIBDRM)"
 	tar -xf "$(MESA_LIBDRM_ARCHIVE)" --strip-components=1 -C "$(MESA_LIBDRM)"
+	patch --batch --forward --fuzz=0 -d "$(MESA_LIBDRM)" -p1 < "$(MESA_LIBDRM_PATCH)"
 	cp "$(MESA_LIBDRM_WRAP)" "$(MESA_SRC)/subprojects/libdrm.wrap"
 	touch "$@"
 

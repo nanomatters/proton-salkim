@@ -1,0 +1,515 @@
+From: Erhan Bilgili <erhan.bilgili@gmail.com>
+Subject: [PATCH] amdgpu: Use an augmented tree for VA allocation.
+
+diff --git a/amdgpu/amdgpu_internal.h b/amdgpu/amdgpu_internal.h
+--- a/amdgpu/amdgpu_internal.h
++++ b/amdgpu/amdgpu_internal.h
+@@ -44,14 +44,15 @@
+ #define AMDGPU_NULL_SUBMIT_SEQ		0
+ 
+ struct amdgpu_bo_va_hole {
+-	struct list_head list;
+-	uint64_t offset;
+-	uint64_t size;
++	struct amdgpu_bo_va_hole *left, *right;
++	uint64_t offset, size, max_size;
++	uint64_t max_64k, max_2m;
++	unsigned height;
+ };
+ 
+ struct amdgpu_bo_va_mgr {
+ 	uint64_t va_max;
+-	struct list_head va_holes;
++	struct amdgpu_bo_va_hole *va_root;
+ 	pthread_mutex_t bo_va_mutex;
+ 	uint32_t va_alignment;
+ };
+diff --git a/amdgpu/amdgpu_vamgr.c b/amdgpu/amdgpu_vamgr.c
+--- a/amdgpu/amdgpu_vamgr.c
++++ b/amdgpu/amdgpu_vamgr.c
+@@ -41,183 +41,330 @@
+ 	return 0;
+ }
+ 
+-drm_private void amdgpu_vamgr_init(struct amdgpu_bo_va_mgr *mgr, uint64_t start,
+-				   uint64_t max, uint64_t alignment)
++/* Address-ordered AVL tree. Cached usable sizes skip subtrees that cannot
++ * satisfy common AMDGPU alignments without changing first-fit placement.
++ * Other alignments use the raw maximum size and an exact per-hole check.
++ */
++#define AMDGPU_VA_ALIGN_64K (64ULL * 1024)
++#define AMDGPU_VA_ALIGN_2M (2ULL * 1024 * 1024)
++
++static unsigned hole_height(const struct amdgpu_bo_va_hole *n)
++{
++	return n ? n->height : 0;
++}
++static uint64_t hole_max_size(const struct amdgpu_bo_va_hole *n)
++{
++	return n ? n->max_size : 0;
++}
++static uint64_t hole_aligned_capacity(uint64_t start, uint64_t size, uint64_t alignment)
++{
++	/* No potentially overflowing round-up of a high-half GPU address. */
++	uint64_t waste = (alignment - (start & (alignment - 1))) & (alignment - 1);
++	return waste < size ? size - waste : 0;
++}
++static uint64_t hole_subtree_capacity(const struct amdgpu_bo_va_hole *n, uint64_t alignment)
++{
++	if (!n)
++		return 0;
++	if (alignment == AMDGPU_VA_ALIGN_64K)
++		return n->max_64k;
++	if (alignment == AMDGPU_VA_ALIGN_2M)
++		return n->max_2m;
++	return n->max_size;
++}
++static void hole_update(struct amdgpu_bo_va_hole *n)
++{
++	unsigned l = hole_height(n->left), r = hole_height(n->right);
++	n->height = 1 + (l > r ? l : r);
++	n->max_size = MAX2(n->size, MAX2(hole_max_size(n->left), hole_max_size(n->right)));
++	n->max_64k = MAX2(hole_aligned_capacity(n->offset, n->size, AMDGPU_VA_ALIGN_64K),
++			  MAX2(hole_subtree_capacity(n->left, AMDGPU_VA_ALIGN_64K),
++			       hole_subtree_capacity(n->right, AMDGPU_VA_ALIGN_64K)));
++	n->max_2m = MAX2(hole_aligned_capacity(n->offset, n->size, AMDGPU_VA_ALIGN_2M),
++			 MAX2(hole_subtree_capacity(n->left, AMDGPU_VA_ALIGN_2M),
++			      hole_subtree_capacity(n->right, AMDGPU_VA_ALIGN_2M)));
++}
++
++static struct amdgpu_bo_va_hole *hole_rotate_left(struct amdgpu_bo_va_hole *n)
++{
++	struct amdgpu_bo_va_hole *p = n->right;
++	n->right = p->left;
++	p->left = n;
++	hole_update(n);
++	hole_update(p);
++	return p;
++}
++static struct amdgpu_bo_va_hole *hole_rotate_right(struct amdgpu_bo_va_hole *n)
++{
++	struct amdgpu_bo_va_hole *p = n->left;
++	n->left = p->right;
++	p->right = n;
++	hole_update(n);
++	hole_update(p);
++	return p;
++}
++static struct amdgpu_bo_va_hole *hole_balance(struct amdgpu_bo_va_hole *n)
++{
++	int delta;
++
++	if (!n)
++		return NULL;
++	hole_update(n);
++	delta = (int)hole_height(n->left) - (int)hole_height(n->right);
++	if (delta > 1) {
++		if (hole_height(n->left->right) > hole_height(n->left->left))
++			n->left = hole_rotate_left(n->left);
++		return hole_rotate_right(n);
++	}
++	if (delta < -1) {
++		if (hole_height(n->right->left) > hole_height(n->right->right))
++			n->right = hole_rotate_right(n->right);
++		return hole_rotate_left(n);
++	}
++	return n;
++}
++
++static struct amdgpu_bo_va_hole *hole_insert(struct amdgpu_bo_va_hole *root,
++					     struct amdgpu_bo_va_hole *n)
++{
++	if (!root) {
++		n->left = n->right = NULL;
++		hole_update(n);
++		return n;
++	}
++	assert(n->offset != root->offset);
++	if (n->offset < root->offset)
++		root->left = hole_insert(root->left, n);
++	else
++		root->right = hole_insert(root->right, n);
++	return hole_balance(root);
++}
++
++static struct amdgpu_bo_va_hole *hole_extract_min(struct amdgpu_bo_va_hole *root,
++						  struct amdgpu_bo_va_hole **out)
++{
++	if (!root->left) {
++		*out = root;
++		return root->right;
++	}
++	root->left = hole_extract_min(root->left, out);
++	return hole_balance(root);
++}
++static struct amdgpu_bo_va_hole *hole_remove(struct amdgpu_bo_va_hole *root, uint64_t start,
++					     struct amdgpu_bo_va_hole **out)
++{
++	assert(root);
++	if (start < root->offset)
++		root->left = hole_remove(root->left, start, out);
++	else if (start > root->offset)
++		root->right = hole_remove(root->right, start, out);
++	else {
++		struct amdgpu_bo_va_hole *next, *right;
++
++		*out = root;
++		if (!root->left)
++			return root->right;
++		if (!root->right)
++			return root->left;
++		right = hole_extract_min(root->right, &next);
++		next->left = root->left;
++		next->right = right;
++		return hole_balance(next);
++	}
++	return hole_balance(root);
++}
++
++static bool hole_fit(const struct amdgpu_bo_va_hole *n, uint64_t size, uint64_t align, bool top,
++		     uint64_t *out)
++{
++	uint64_t rem, waste;
++
++	if (size > n->size)
++		return false;
++	if (top) {
++		uint64_t va = n->offset + n->size - size;
++		va -= va % align;
++		if (va < n->offset)
++			return false;
++		*out = va;
++		return true;
++	}
++	rem = n->offset % align;
++	waste = rem ? align - rem : 0;
++	if (waste >= n->size || size > n->size - waste)
++		return false;
++	*out = n->offset + waste;
++	return true;
++}
++
++static struct amdgpu_bo_va_hole *hole_find_fit(struct amdgpu_bo_va_hole *root, uint64_t size,
++					       uint64_t align, bool top, uint64_t *va)
+ {
+ 	struct amdgpu_bo_va_hole *n;
+ 
++	if (!root || hole_subtree_capacity(root, align) < size)
++		return NULL;
++	n = hole_find_fit(top ? root->right : root->left, size, align, top, va);
++	if (n)
++		return n;
++	if (hole_fit(root, size, align, top, va))
++		return root;
++	return hole_find_fit(top ? root->left : root->right, size, align, top, va);
++}
++
++static struct amdgpu_bo_va_hole *hole_find_base(struct amdgpu_bo_va_hole *root, uint64_t base,
++						uint64_t size)
++{
++	struct amdgpu_bo_va_hole *n = NULL;
++	while (root) {
++		if (root->offset <= base) {
++			n = root;
++			root = root->right;
++		} else
++			root = root->left;
++	}
++	if (!n || base - n->offset > n->size || size > n->size - (base - n->offset))
++		return NULL;
++	return n;
++}
++
++drm_private void amdgpu_vamgr_init(struct amdgpu_bo_va_mgr *mgr, uint64_t start, uint64_t max,
++				   uint64_t alignment)
++{
+ 	mgr->va_max = max;
+ 	mgr->va_alignment = alignment;
+-
+-	list_inithead(&mgr->va_holes);
++	mgr->va_root = NULL;
+ 	pthread_mutex_init(&mgr->bo_va_mutex, NULL);
+-	pthread_mutex_lock(&mgr->bo_va_mutex);
+-	n = calloc(1, sizeof(struct amdgpu_bo_va_hole));
+-	n->size = mgr->va_max - start;
+-	n->offset = start;
+-	list_add(&n->list, &mgr->va_holes);
+-	pthread_mutex_unlock(&mgr->bo_va_mutex);
++	if (start >= max)
++		return;
++
++	mgr->va_root = calloc(1, sizeof(*mgr->va_root));
++	if (!mgr->va_root)
++		return;
++	mgr->va_root->offset = start;
++	mgr->va_root->size = max - start;
++	hole_update(mgr->va_root);
++}
++
++static void amdgpu_vamgr_destroy_holes(struct amdgpu_bo_va_hole *hole)
++{
++	if (!hole)
++		return;
++	amdgpu_vamgr_destroy_holes(hole->left);
++	amdgpu_vamgr_destroy_holes(hole->right);
++	free(hole);
+ }
+ 
+ drm_private void amdgpu_vamgr_deinit(struct amdgpu_bo_va_mgr *mgr)
+ {
+-	struct amdgpu_bo_va_hole *hole, *tmp;
+-	LIST_FOR_EACH_ENTRY_SAFE(hole, tmp, &mgr->va_holes, list) {
+-		list_del(&hole->list);
+-		free(hole);
+-	}
++	amdgpu_vamgr_destroy_holes(mgr->va_root);
++	mgr->va_root = NULL;
+ 	pthread_mutex_destroy(&mgr->bo_va_mutex);
+ }
+ 
+-static drm_private int
+-amdgpu_vamgr_subtract_hole(struct amdgpu_bo_va_hole *hole, uint64_t start_va,
+-			   uint64_t end_va)
+-{
+-	if (start_va > hole->offset && end_va - hole->offset < hole->size) {
+-		struct amdgpu_bo_va_hole *n = calloc(1, sizeof(struct amdgpu_bo_va_hole));
+-		if (!n)
++static int amdgpu_vamgr_find_va(struct amdgpu_bo_va_mgr *m, uint64_t size, uint64_t align,
++				uint64_t base, bool top, uint64_t *out)
++{
++	struct amdgpu_bo_va_hole *n, *lower = NULL, *removed;
++	uint64_t va = base, lo, hi, end;
++
++	align = MAX2(align, m->va_alignment);
++	if (base % align)
++		return -EINVAL;
++	if (size > UINT64_MAX - (m->va_alignment - 1))
++		return -ENOMEM;
++	size = ALIGN(size, m->va_alignment);
++	pthread_mutex_lock(&m->bo_va_mutex);
++	n = base ? hole_find_base(m->va_root, base, size)
++		 : hole_find_fit(m->va_root, size, align, top, &va);
++	if (!n) {
++		pthread_mutex_unlock(&m->bo_va_mutex);
++		return -ENOMEM;
++	}
++	lo = n->offset;
++	hi = n->offset + n->size;
++	end = va + size;
++	*out = va;
++	if (va > lo && end < hi) {
++		lower = calloc(1, sizeof(struct amdgpu_bo_va_hole));
++		if (!lower) {
++			pthread_mutex_unlock(&m->bo_va_mutex);
+ 			return -ENOMEM;
+-
+-		n->size = start_va - hole->offset;
+-		n->offset = hole->offset;
+-		list_add(&n->list, &hole->list);
+-
+-		hole->size -= (end_va - hole->offset);
+-		hole->offset = end_va;
+-	} else if (start_va > hole->offset) {
+-		hole->size = start_va - hole->offset;
+-	} else if (end_va - hole->offset < hole->size) {
+-		hole->size -= (end_va - hole->offset);
+-		hole->offset = end_va;
+-	} else {
+-		list_del(&hole->list);
+-		free(hole);
+-	}
+-
++		}
++		lower->offset = lo;
++		lower->size = va - lo;
++	}
++	m->va_root = hole_remove(m->va_root, lo, &removed);
++	assert(removed == n);
++	if (end < hi) {
++		n->offset = end;
++		n->size = hi - end;
++		m->va_root = hole_insert(m->va_root, n);
++	} else if (va > lo) {
++		n->size = va - lo;
++		m->va_root = hole_insert(m->va_root, n);
++	} else
++		free(n);
++	if (lower)
++		m->va_root = hole_insert(m->va_root, lower);
++	pthread_mutex_unlock(&m->bo_va_mutex);
+ 	return 0;
+ }
+ 
+-static drm_private int
+-amdgpu_vamgr_find_va(struct amdgpu_bo_va_mgr *mgr, uint64_t size,
+-		     uint64_t alignment, uint64_t base_required,
+-		     bool search_from_top, uint64_t *va_out)
+-{
+-	struct amdgpu_bo_va_hole *hole, *n;
+-	uint64_t offset = 0;
+-	int ret;
+-
+-
+-	alignment = MAX2(alignment, mgr->va_alignment);
+-	size = ALIGN(size, mgr->va_alignment);
+-
+-	if (base_required % alignment)
+-		return -EINVAL;
+-
+-	pthread_mutex_lock(&mgr->bo_va_mutex);
+-	if (!search_from_top) {
+-		LIST_FOR_EACH_ENTRY_SAFE_REV(hole, n, &mgr->va_holes, list) {
+-			if (base_required) {
+-				if (hole->offset > base_required ||
+-				   (hole->offset + hole->size) < (base_required + size))
+-					continue;
+-				offset = base_required;
+-			} else {
+-				uint64_t waste = hole->offset % alignment;
+-				waste = waste ? alignment - waste : 0;
+-				offset = hole->offset + waste;
+-				if (offset >= (hole->offset + hole->size) ||
+-				    size > (hole->offset + hole->size) - offset) {
+-					continue;
+-				}
+-			}
+-			ret = amdgpu_vamgr_subtract_hole(hole, offset, offset + size);
+-			pthread_mutex_unlock(&mgr->bo_va_mutex);
+-			*va_out = offset;
+-			return ret;
+-		}
+-	} else {
+-		LIST_FOR_EACH_ENTRY_SAFE(hole, n, &mgr->va_holes, list) {
+-			if (base_required) {
+-				if (hole->offset > base_required ||
+-				   (hole->offset + hole->size) < (base_required + size))
+-					continue;
+-				offset = base_required;
+-			} else {
+-				if (size > hole->size)
+-					continue;
+-
+-				offset = hole->offset + hole->size - size;
+-				offset -= offset % alignment;
+-				if (offset < hole->offset) {
+-					continue;
+-				}
+-			}
+-
+-			ret = amdgpu_vamgr_subtract_hole(hole, offset, offset + size);
+-			pthread_mutex_unlock(&mgr->bo_va_mutex);
+-			*va_out = offset;
+-			return ret;
+-		}
+-	}
+-
+-	pthread_mutex_unlock(&mgr->bo_va_mutex);
+-	return -ENOMEM;
+-}
+-
+-static drm_private void
+-amdgpu_vamgr_free_va(struct amdgpu_bo_va_mgr *mgr, uint64_t va, uint64_t size)
+-{
+-	struct amdgpu_bo_va_hole *hole, *next;
++static void amdgpu_vamgr_free_va(struct amdgpu_bo_va_mgr *m, uint64_t va, uint64_t size)
++{
++	struct amdgpu_bo_va_hole *lo = NULL, *hi = NULL, *n, *removed;
++	bool merge_lo, merge_hi;
+ 
+ 	if (va == AMDGPU_INVALID_VA_ADDRESS)
+ 		return;
+-
+-	size = ALIGN(size, mgr->va_alignment);
+-
+-	pthread_mutex_lock(&mgr->bo_va_mutex);
+-	hole = container_of(&mgr->va_holes, hole, list);
+-	LIST_FOR_EACH_ENTRY(next, &mgr->va_holes, list) {
+-		if (next->offset < va)
+-			break;
+-		hole = next;
+-	}
+-
+-	if (&hole->list != &mgr->va_holes) {
+-		/* Grow upper hole if it's adjacent */
+-		if (hole->offset == (va + size)) {
+-			hole->offset = va;
+-			hole->size += size;
+-			/* Merge lower hole if it's adjacent */
+-			if (next != hole &&
+-			    &next->list != &mgr->va_holes &&
+-			    (next->offset + next->size) == va) {
+-				next->size += hole->size;
+-				list_del(&hole->list);
+-				free(hole);
+-			}
+-			goto out;
++	assert(size <= UINT64_MAX - (m->va_alignment - 1));
++	size = ALIGN(size, m->va_alignment);
++	pthread_mutex_lock(&m->bo_va_mutex);
++	n = m->va_root;
++	while (n) {
++		if (n->offset < va) {
++			lo = n;
++			n = n->right;
++		} else {
++			hi = n;
++			n = n->left;
+ 		}
+ 	}
+-
+-	/* Grow lower hole if it's adjacent */
+-	if (next != hole && &next->list != &mgr->va_holes &&
+-	    (next->offset + next->size) == va) {
+-		next->size += size;
+-		goto out;
+-	}
+-
+-	/* FIXME on allocation failure we just lose virtual address space
+-	 * maybe print a warning
+-	 */
+-	next = calloc(1, sizeof(struct amdgpu_bo_va_hole));
+-	if (next) {
+-		next->size = size;
+-		next->offset = va;
+-		list_add(&next->list, &hole->list);
+-	}
+-
+-out:
+-	pthread_mutex_unlock(&mgr->bo_va_mutex);
++	assert(!lo || lo->offset + lo->size <= va);
++	assert(!hi || va + size <= hi->offset);
++	merge_lo = lo && lo->offset + lo->size == va;
++	merge_hi = hi && va + size == hi->offset;
++	if (merge_hi) {
++		m->va_root = hole_remove(m->va_root, hi->offset, &removed);
++		assert(removed == hi);
++		if (merge_lo) {
++			m->va_root = hole_remove(m->va_root, lo->offset, &removed);
++			assert(removed == lo);
++			lo->size += size + hi->size;
++			free(hi);
++			n = lo;
++		} else {
++			hi->offset = va;
++			hi->size += size;
++			n = hi;
++		}
++	} else if (merge_lo) {
++		m->va_root = hole_remove(m->va_root, lo->offset, &removed);
++		assert(removed == lo);
++		lo->size += size;
++		n = lo;
++	} else {
++		n = calloc(1, sizeof(struct amdgpu_bo_va_hole));
++		if (n) {
++			n->offset = va;
++			n->size = size;
++		}
++		/* Match libdrm: if allocation fails, this VA is not returned to pool. */
++	}
++	if (n)
++		m->va_root = hole_insert(m->va_root, n);
++	pthread_mutex_unlock(&m->bo_va_mutex);
+ }
+ 
+ drm_public int amdgpu_va_range_alloc(amdgpu_device_handle dev,
