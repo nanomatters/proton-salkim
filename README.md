@@ -210,6 +210,24 @@ WAYLANDDRV_PRIMARY_MONITOR=DP-2 %command%
 ```
 
 
+How do I save global and per-game settings?
+-------------------------------------------
+
+Create `~/.config/proton/config.ini` (or `$XDG_CONFIG_HOME/proton/config.ini`).
+See the [sample configuration](config.sample.ini) for examples.
+
+```ini
+[global]
+PROTON_HUD = 3
+
+[steam:292030]
+PROTON_HUD = 4
+```
+
+Game settings override `[global]`. Explicit launch environment variables take
+precedence over their saved values. Non-Steam launchers can use `[umu:<UMU_ID>]`.
+
+
 How do I enable the HUD with PROTON_HUD?
 ---------------------------------------
 

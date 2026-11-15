@@ -38,6 +38,11 @@ from ctypes import c_ssize_t
 from filelock import FileLock
 from random import randrange
 
+from proton_config import Settings
+
+g_user_config = Settings(os.environ, lambda message: print("Proton: " + message, file=sys.stderr))
+g_user_config.apply(os.environ)
+
 # Select the private driver before any module loads Vulkan.
 if os.environ.get("PROTON_RADV") == "1":
     import mesa
