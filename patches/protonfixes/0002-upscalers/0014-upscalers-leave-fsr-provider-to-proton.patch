@@ -1,0 +1,201 @@
+From: Erhan Bilgili <erhan.bilgili@gmail.com>
+Subject: [PATCH] upscalers: Leave the FSR provider to Proton.
+
+Remove the legacy provider downloader and upgrade flags.
+---
+--- a/upscalers.py
++++ b/upscalers.py
+@@ -86,7 +86,6 @@
+ 
+ __dlss_section = 'dlss_files'
+ __xess_section = 'xess_files'
+-__fsr4_section = 'fsr4_files'
+ __opti_section = 'opti_files'
+ __ffx3_section = 'ffx3_files'
+ __ffx4_section = 'ffx4_files'
+@@ -146,19 +145,10 @@
+         ),
+     }
+ 
+-def __get_fsr4_dlls(version: str = 'default') -> dict:
+-    return {
+-        'drive_c/windows/system32/amdxcffx64.dll': __get_dll_manifest(
+-            'fsr_40_drv', version
+-        ),
+-    }
+-
+-
+ def __get_upscaler_items(name: str, version: str) -> tuple[dict, Callable, str]:
+     upscalers = {
+         'dlss': (__get_dlss_dlls, __download_extract_zip, __dlss_section),
+         'xess': (__get_xess_dlls, __download_extract_zip, __xess_section),
+-        'fsr4': (__get_fsr4_dlls, __download_extract_zip, __fsr4_section),
+         'ffx3': (__get_ffx3_dlls, __download_extract_zip, __ffx3_section),
+         'ffx4': (__get_ffx4_dlls, __download_extract_zip, __ffx4_section),
+     }
+@@ -275,7 +265,7 @@
+ ) -> bool:
+     """Check for upscaler files and their versions
+ 
+-    name: the name of the upscaler, possible values dlss, xess, fsr3, fsr4
++    name: the name of the upscaler, possible values dlss, xess, ffx3, ffx4
+     version: the version of the upscaler dll to download
+     ignore_version: ignore version mismatch but still check if the dlls are present
+     """
+@@ -444,7 +434,7 @@
+ ) -> None:
+     """Check for upscaler files and their versions
+ 
+-    name: the name of the upscaler, possible values dlss, xess, fsr3, fsr4
++    name: the name of the upscaler, possible values dlss, xess, ffx3, ffx4
+     version: the version of the upscaler dll to download
+     """
+     if check_upscaler(name, compat_dir, prefix_dir, version, ignore_version=False):
+@@ -711,22 +701,14 @@
+     dlss_version = get_version(env, 'PROTON_DLSS_UPGRADE', 'default')
+     xess_version = get_version(env, 'PROTON_XESS_UPGRADE', 'default')
+ 
+-    fsr4_version = get_version(env, 'PROTON_FSR4_UPGRADE', 'default')
+-
+     ffx3_version = get_version(env, 'PROTON_FFX3_UPGRADE', '1.0.1.41314')
+     ffx4_version = get_version(env, 'PROTON_FFX4_UPGRADE', 'default')
+ 
+     optiscaler_version = get_version(env, 'PROTON_USE_OPTISCALER', 'default')
+-    # if optiscaler is enabled, control ffx4_version through fsr4_version unless explicitly set
+-    if 'optiscaler' in compat_config and 'fsr4' in compat_config and 'ffx4' not in compat_config:
+-        ffx4_version = fsr4_version
+-
+     upscaler_replace = set()
+     upscalers = (
+         ('dlss', dlss_version, 'dlss' in compat_config or 'optiscaler' in compat_config),
+         ('xess', xess_version, 'xess' in compat_config),
+-        # Wine also uses this provider without an explicit upgrade request.
+-        ('fsr4', fsr4_version, True),
+         # fidelityfx sdk
+         ('ffx3', ffx3_version, 'ffx3' in compat_config),
+         ('ffx4', ffx4_version, 'ffx4' in compat_config),
+@@ -757,19 +739,8 @@
+                 upscaler_replace.add(name)
+         if optiscaler_enabled:
+             log.info('OptiScaler enabled.')
+-            if 'fsr4' in compat_config:
+-                if ffx4_version in {'4.0.0', '4.0.1'}:
+-                    clean_upscaler('ffx4', compat_dir, prefix_dir)
+-                else:
+-                    setup_upscaler('ffx4', compat_dir, prefix_dir, ffx4_version)
+             env['WINE_OPTISCALER_NAME'] = env.get('PROTON_OPTISCALER_NAME', 'dxgi.dll')
+             upscaler_replace.clear()
+-
+-    if 'fsr4' in upscaler_replace:
+-        if 'fsr4' in compat_config:
+-            env['FSR4_UPGRADE'] = '1'
+-        if 'mlfg' in compat_config:
+-            env['MLFG_UPGRADE'] = '1'
+ 
+     if 'dlss' in upscaler_replace:
+         env.setdefault(
+@@ -790,9 +761,8 @@
+     if 'ffx4' in upscaler_replace:
+         pass
+ 
+-    loader_replace = upscaler_replace - {'fsr4'}
+-    if loader_replace:
+-        env['WINE_UPSCALER_REPLACE'] = ','.join(loader_replace)
++    if upscaler_replace:
++        env['WINE_UPSCALER_REPLACE'] = ','.join(upscaler_replace)
+         log.debug(f'WINE_UPSCALER_REPLACE: {env["WINE_UPSCALER_REPLACE"]}.')
+ 
+ 
+--- a/tests/test_optiscaler.py
++++ b/tests/test_optiscaler.py
+@@ -135,7 +135,7 @@
+     def test_nightly_skips_implicit_xess_and_fidelityfx_downloads(self):
+         self.bundled_dependencies()
+         env, calls = self.run_upscalers()
+-        self.assertEqual(calls, [('dlss', 'default'), ('fsr4', 'default')])
++        self.assertEqual(calls, [('dlss', 'default')])
+         self.assertEqual(env['WINE_OPTISCALER_NAME'], 'dxgi.dll')
+         self.assertNotIn('WINE_UPSCALER_REPLACE', env)
+ 
+@@ -273,7 +273,7 @@
+         with mock.patch.object(nightly, 'resolve', side_effect=OSError('offline')), \
+                 mock.patch.object(upscalers, 'setup_upscaler', return_value=True) as setup:
+             upscalers.setup_upscalers({'optiscaler'}, env, self.compat, self.prefix)
+-        self.assertEqual([call.args[0] for call in setup.call_args_list], ['dlss', 'fsr4'])
++        self.assertEqual([call.args[0] for call in setup.call_args_list], ['dlss'])
+         self.assertEqual(env['WINE_OPTISCALER_NAME'], 'dxgi.dll')
+         self.assertFalse((self.destination / 'libxess.dll').exists())
+ 
+@@ -288,7 +288,7 @@
+         with mock.patch.object(nightly, 'resolve', side_effect=OSError('offline')), \
+                 mock.patch.object(upscalers, 'setup_upscaler', return_value=True) as setup:
+             upscalers.setup_upscalers({'optiscaler'}, env, self.compat, self.prefix)
+-        self.assertEqual([call.args[0] for call in setup.call_args_list], ['dlss', 'fsr4', 'xess', 'ffx3'])
++        self.assertEqual([call.args[0] for call in setup.call_args_list], ['dlss', 'xess', 'ffx3'])
+         self.assertEqual(env['WINE_OPTISCALER_NAME'], 'dxgi.dll')
+         self.assertEqual((self.destination / 'libxess.dll').read_bytes(), b'keep stable dependency')
+ 
+@@ -297,7 +297,7 @@
+         with mock.patch.object(upscalers, 'setup_upscaler', return_value=True) as setup, \
+                 mock.patch.object(upscalers, 'setup_optiscaler') as opti:
+             upscalers.setup_upscalers({'xess', 'ffx3'}, env, self.compat, self.prefix)
+-        self.assertEqual([call.args[0] for call in setup.call_args_list], ['xess', 'fsr4', 'ffx3'])
++        self.assertEqual([call.args[0] for call in setup.call_args_list], ['xess', 'ffx3'])
+         self.assertEqual(set(env['WINE_UPSCALER_REPLACE'].split(',')), {'xess', 'ffx3'})
+         opti.assert_not_called()
+ 
+@@ -315,36 +315,31 @@
+             self.assertTrue(self.setup('nightly'))
+         self.assertEqual(self.streamline_setup.call_count, 2)
+ 
+-    def test_provider_setup_preserves_wine_upgrade_policy(self):
++    def test_provider_policy_is_owned_by_proton(self):
+         for config in (set(), {'fsr4'}, {'mlfg'}, {'fsr4', 'mlfg'}):
+             with self.subTest(config=config):
+-                env = {}
+-                with mock.patch.object(upscalers, 'setup_upscaler', return_value=True) as setup:
++                env = {'PROTON_FSR4_UPGRADE': '26.10.2'}
++                before = dict(env)
++                with mock.patch.object(upscalers, 'setup_upscaler') as setup:
+                     upscalers.setup_upscalers(config, env, self.compat, self.prefix)
+-                setup.assert_called_once_with('fsr4', self.compat, self.prefix, 'default')
+-                self.assertEqual(env.get('FSR4_UPGRADE'), '1' if 'fsr4' in config else None)
+-                self.assertEqual(env.get('MLFG_UPGRADE'), '1' if 'mlfg' in config else None)
+-                self.assertNotIn('WINE_UPSCALER_REPLACE', env)
+-
+-    def test_provider_failure_does_not_enable_upgrades(self):
+-        env = {}
+-        with mock.patch.object(upscalers, 'setup_upscaler', return_value=False):
+-            upscalers.setup_upscalers({'fsr4', 'mlfg'}, env, self.compat, self.prefix)
+-        self.assertNotIn('FSR4_UPGRADE', env)
+-        self.assertNotIn('MLFG_UPGRADE', env)
+-        self.assertNotIn('WINE_UPSCALER_REPLACE', env)
+-
+-    def test_provider_setup_respects_selected_version(self):
+-        env = {'PROTON_FSR4_UPGRADE': '4.0.0'}
+-        with mock.patch.object(upscalers, 'setup_upscaler', return_value=True) as setup:
+-            upscalers.setup_upscalers({'fsr4'}, env, self.compat, self.prefix)
+-        setup.assert_called_once_with('fsr4', self.compat, self.prefix, '4.0.0')
+-        self.assertEqual(env['FSR4_UPGRADE'], '1')
++                setup.assert_not_called()
++                self.assertEqual(env, before)
++
++    def test_provider_flags_do_not_change_optiscaler_sdk_selection(self):
++        self.bundled_dependencies()
++        _, calls = self.run_upscalers({'fsr4'}, {'PROTON_FSR4_UPGRADE': '26.10.2'})
++        self.assertEqual(calls, [('dlss', 'default')])
++        self.dependency_files('ffx4_files', {'amd_fidelityfx_loader_dx12.dll': b'keep'})
++        before = self.snapshot()
++        _, calls = self.run_upscalers({'fsr4'}, {'PROTON_FSR4_UPGRADE': '4.0.0'})
++        self.assertEqual(calls, [('dlss', 'default')])
++        self.assertEqual(self.snapshot(), before)
+ 
+     def test_provider_setup_does_not_overwrite_direct_wine_overrides(self):
+         env = {'FSR4_UPGRADE': '0', 'MLFG_UPGRADE': '0'}
+-        with mock.patch.object(upscalers, 'setup_upscaler', return_value=True):
++        with mock.patch.object(upscalers, 'setup_upscaler') as setup:
+             upscalers.setup_upscalers(set(), env, self.compat, self.prefix)
++        setup.assert_not_called()
+         self.assertEqual(env, {'FSR4_UPGRADE': '0', 'MLFG_UPGRADE': '0'})
+ 
+     def test_failed_streamline_bootstrap_does_not_disable_optiscaler(self):

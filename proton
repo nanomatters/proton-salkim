@@ -57,6 +57,7 @@ import vulkan_layers
 #To enable debug logging, copy "user_settings.sample.py" to "user_settings.py"
 #and edit it if needed.
 import utilities
+import upscalers
 
 
 CURRENT_PREFIX_VERSION="CachyOS-11.0-100"
@@ -2604,12 +2605,14 @@ if __name__ == "__main__":
     protonfixes.setup_local_shader_cache(g_session.compat_config, g_session.env)
     g_session.check_environment("PROTON_FFX3_UPGRADE", "ffx3")
     g_session.check_environment("PROTON_FFX4_UPGRADE", "ffx4")
-    g_session.check_environment("PROTON_FSR4_UPGRADE", "fsr4")
     g_session.check_environment("PROTON_MLFG_UPGRADE", "mlfg")
     g_session.check_environment("PROTON_DLSS_UPGRADE", "dlss")
     g_session.check_environment("PROTON_XESS_UPGRADE", "xess")
     g_session.check_environment("PROTON_USE_OPTISCALER", "optiscaler")
     protonfixes.setup_upscalers(g_session.compat_config, g_session.env, g_compatdata.base_dir, g_compatdata.prefix_dir)
+    upscalers.setup(g_session.env,
+                    mode=sys.argv[1], command=sys.argv[2:], log=log,
+                    gpu_query=utilities.get_vulkan_gpus)
     protonfixes.execute()
 
     #determine mode

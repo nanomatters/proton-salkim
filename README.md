@@ -228,6 +228,31 @@ Game settings override `[global]`. Explicit launch environment variables take
 precedence over their saved values. Non-Steam launchers can use `[umu:<UMU_ID>]`.
 
 
+How are AMD FSR upgrades managed?
+--------------------------------
+
+Upscaler upgrades are disabled by default. Set `PROTON_UPSCALER_UPGRADE=1`
+globally or per game to enable them.
+
+On compatible AMD GPUs, enabling this installs the FSR provider selected
+by the bundled manifest. A progress window appears during download and extraction;
+installed components are reused under `~/.local/share/proton/components/`.
+FSR providers live in `fsr/<driver-version>/`; existing caches are migrated when safe.
+The FSR download fetches only the required sections of AMD's driver package when the server supports partial downloads.
+Downloads use disk space beside the component cache. Choose **Skip updates** to
+continue launching without further downloads. If an update fails, Proton reuses
+a complete verified cached release when available.
+Proton keeps the three most recently selected releases per component. Releases
+used during the current boot are protected; extra copies are pruned after reboot.
+Game files are left untouched. 7-Zip is downloaded if missing.
+Cached components are checksum-verified on each enabled launch.
+Explicit `WINE_*_PROVIDER` paths still take precedence.
+
+Lite is selected by default on supported RDNA 2/3/3.5 iGPU-only systems.
+Use `WINE_FSR4_LITE=1` to request Lite elsewhere, or `=0` to disable that default.
+Explicit `WINE_FSR4_PROVIDER` paths leave model selection to the user. Select FSR and frame generation in the game's settings as usual.
+
+
 How do I enable the HUD with PROTON_HUD?
 ---------------------------------------
 

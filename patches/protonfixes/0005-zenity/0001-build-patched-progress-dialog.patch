@@ -1,0 +1,58 @@
+diff --git a/Makefile b/Makefile
+--- a/Makefile
++++ b/Makefile
+@@ -225,16 +225,49 @@
+ #
+ 
+ ZENITY_RS_VER := 0.2.8
+-ZENITY_RS_x86_64_SHA256 := 797bd492a8723d741d888320ab87b934b0c4571a1ff2c128963a08daa35df8c7
+-ZENITY_RS_aarch64_SHA256 := c3f8a11fdc17632ffe3d5b1640a931139c2b8d86145c531e0f4db8a63ca3f2a2
++ZENITY_RS_SOURCE_SHA256 := 40d62e7a90051310b6c6c03f4572d38f367fecdc60b1723a4db2c5fea87e5a3d
++ZENITY_RS_SOURCE := $(OBJDIR)/zenity-rs-$(ZENITY_RS_VER).tar.gz
++ZENITY_RS_RUST_VERSION := 1.88.0
++ZENITY_RS_RUST_TARGET := $(TARGET_ARCH_unix)-unknown-linux-gnu
++ZENITY_RS_RUST_DIR := $(OBJDIR)/zenity-rs-rust-$(ZENITY_RS_RUST_VERSION)-$(ZENITY_RS_RUST_TARGET)
++ZENITY_RS_RUST_ARCHIVES := $(foreach component,rustc cargo rust-std,$(OBJDIR)/$(component)-$(ZENITY_RS_RUST_VERSION)-$(ZENITY_RS_RUST_TARGET).tar.xz)
++ZENITY_RS_rustc_x86_64_SHA256 := b049fd57fce274d10013e2cf0e05f215f68f6580865abc52178f66ae9bf43fd8
++ZENITY_RS_cargo_x86_64_SHA256 := 856962610ee821648cee32e3d6abac667af7bb7ea6ec6f3d184cc31e66044f6b
++ZENITY_RS_rust-std_x86_64_SHA256 := 36d7eacf46bd5199cb433e49a9ed9c9b380d82f8a0ebc05e89b43b51c070c955
++ZENITY_RS_rustc_aarch64_SHA256 := b841d40bb98b2718c6452ec8421a4a8df584fce8d41875bcd9b1af83f52f7d96
++ZENITY_RS_cargo_aarch64_SHA256 := 5aa43865f2002914ce4fca8916b4403bfca62f17e779ad368f6a17553296a58b
++ZENITY_RS_rust-std_aarch64_SHA256 := e9ac4ff3c87247a2195fcceddbf1bdeee5c4fd337f014d8f4c4e3ac99002021f
++
++$(ZENITY_RS_RUST_ARCHIVES): $(OBJDIR)/%-$(ZENITY_RS_RUST_VERSION)-$(ZENITY_RS_RUST_TARGET).tar.xz: | $(OBJDIR)
++	curl --fail --location --retry 3 "https://static.rust-lang.org/dist/$(notdir $@)" --output $@.tmp
++	echo "$(ZENITY_RS_$*_$(TARGET_ARCH_unix)_SHA256) $@.tmp" | sha256sum -c -
++	mv $@.tmp $@
++
++$(ZENITY_RS_RUST_DIR)/.installed: $(ZENITY_RS_RUST_ARCHIVES)
++	mkdir -p $(ZENITY_RS_RUST_DIR)/src
++	set -e; for rust_archive in $(ZENITY_RS_RUST_ARCHIVES); do \
++	  rust_package=$${rust_archive##*/}; rust_package=$${rust_package%.tar.xz}; \
++	  tar -xf "$$rust_archive" -C $(ZENITY_RS_RUST_DIR)/src; \
++	  $(ZENITY_RS_RUST_DIR)/src/$$rust_package/install.sh --prefix=$(ZENITY_RS_RUST_DIR) --disable-ldconfig; \
++	done
++	touch $@
++
++$(ZENITY_RS_SOURCE): | $(OBJDIR)
++	curl --fail --location --retry 3 \
++	  "https://codeload.github.com/QaidVoid/zenity-rs/tar.gz/refs/tags/v$(ZENITY_RS_VER)" --output $@.tmp
++	echo "$(ZENITY_RS_SOURCE_SHA256) $@.tmp" | sha256sum -c -
++	mv $@.tmp $@
+ 
+ $(OBJDIR)/zenity-rs: | $(OBJDIR)
+ 	mkdir -p $(@)
+ 
+-$(OBJDIR)/.build-zenity-rs-dist: | $(OBJDIR)/zenity-rs
+-	$(info :: Downloading zenity-rs )
++$(OBJDIR)/.build-zenity-rs-dist: $(ZENITY_RS_SOURCE) $(ZENITY_RS_PATCH) $(ZENITY_RS_RUST_DIR)/.installed | $(OBJDIR)/zenity-rs
++	$(info :: Building zenity-rs )
++	tar -xf $(ZENITY_RS_SOURCE) -C $(OBJDIR)/zenity-rs --strip-components=1
++	patch --batch -d $(OBJDIR)/zenity-rs -Np1 -i "$(ZENITY_RS_PATCH)"
+ 	cd $(OBJDIR)/zenity-rs && \
+-	curl -L "https://github.com/QaidVoid/zenity-rs/releases/download/v$(ZENITY_RS_VER)/zenity-rs-$(TARGET_ARCH_unix)-linux" --output zenity-rs
++	  RUSTC=$(ZENITY_RS_RUST_DIR)/bin/rustc $(ZENITY_RS_RUST_DIR)/bin/cargo build --locked --release --target $(ZENITY_RS_RUST_TARGET)
++	install -m755 $(OBJDIR)/zenity-rs/target/$(ZENITY_RS_RUST_TARGET)/release/zenity-rs $(OBJDIR)/zenity-rs/zenity-rs
+ 	touch $(@)
+ 
+ .PHONY: zenity-rs-dist

@@ -1980,6 +1980,8 @@ all-dist: $(DIST_LICENSE) $(DIST_OFL_LICENSE) $(DIST_AV1_PATENTS)
 ## protonfixes
 ##
 
+export ZENITY_RS_PATCH := $(PATCHES_SRC)/zenity-rs/0001-inline-progress-cancel.patch
+
 $(eval $(call rules-source,protonfixes,$(SRCDIR)/protonfixes))
 $(eval $(call rules-common,protonfixes,x86_64,unix))
 $(eval $(call rules-common,protonfixes,aarch64,unix))
@@ -2053,6 +2055,16 @@ $(PROTON_CONFIG_TARGET): $(addprefix $(SRCDIR)/,proton_config.py)
 
 PROTON_CONFIG_SAMPLE_TARGET := $(addprefix $(DST_BASE)/,config.sample.ini)
 $(PROTON_CONFIG_SAMPLE_TARGET): $(addprefix $(SRCDIR)/,config.sample.ini)
+
+UPSCALERS_TARGET := $(DST_BASE)/upscalers/.stamp
+$(UPSCALERS_TARGET): $(wildcard $(SRCDIR)/upscalers/*.py) $(wildcard $(SRCDIR)/upscalers/releases/*.json) \
+                     $(SRCDIR)/upscalers $(SRCDIR)/upscalers/releases $(SRCDIR)/Makefile.in | $(DST_DIR)
+	mkdir -p $(DST_BASE)/upscalers
+	rsync --delete --delete-excluded -arx --include='/*.py' --include='/releases/' \
+	      --include='/releases/*.json' --exclude='*' $(SRCDIR)/upscalers/ $(DST_BASE)/upscalers/
+	touch $@
+
+all-dist: $(UPSCALERS_TARGET)
 
 DIST_COPY_TARGETS := $(FILELOCK_TARGET) $(PROTON_PY_TARGET) $(PROTON_CONFIG_TARGET) $(PROTON_CONFIG_SAMPLE_TARGET) \
                      $(VULKAN_BINDINGS_TARGET) $(UTILITIES_TARGET) $(DESKTOP_MONITOR_TARGET) $(VULKAN_LAYERS_TARGET) $(MESA_TARGET) \

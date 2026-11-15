@@ -1,0 +1,103 @@
+From: Erhan Bilgili <erhan.bilgili@gmail.com>
+Subject: [PATCH] upscalers: Share the system-first 7-Zip helper.
+
+Use the same extractor as the FSR component manager.
+---
+--- a/optiscaler_nightly.py
++++ b/optiscaler_nightly.py
+@@ -4,7 +4,6 @@
+ import hashlib
+ import json
+ import os
+-import platform
+ import re
+ import shutil
+ import subprocess
+@@ -14,16 +13,12 @@
+ from pathlib import Path, PurePosixPath
+ 
+ from .logger import log
++from upscalers.sevenzip import extractor
+ 
+ 
+ ROOT = 'drive_c/windows/system32/umu'
+ ALIASES = ('dxgi.dll', 'd3d12.dll', 'winmm.dll', 'dbghelp.dll')
+ REPOSITORY = 'optiscaler/OptiScaler-nightly'
+-SEVENZIP_VERSION = '26.03'
+-SEVENZIP_BUILDS = {
+-    'x86_64': ('x64', 'dc99eff5008f1ab79bd7084c68513701547a808a89502bf4133683535ab3c695'),
+-    'aarch64': ('arm64', '2389ba20e4d8295e8709c20b6263b69bd1ec4972fe38a04ad7a1badbf595b996'),
+-}
+ # Match the stable Proton package's launcher/crash-handler exclusions.
+ EXCLUDED_PROCESSES = (
+     'crashpad_handler.exe', 'crashreport.exe', 'crashreporter.exe', 'crs-handler.exe',
+@@ -128,29 +123,6 @@
+         return _release_item(json.loads(metadata.read_text(encoding='utf-8')), version)
+     atomic_write(metadata, json.dumps(data).encode('utf-8'))
+     return item
+-
+-
+-def extractor(cache):
+-    """Use the official static host binary, independent of the game's bitness."""
+-    arch, checksum = SEVENZIP_BUILDS[platform.machine()]
+-    directory = Path(cache) / '7zip' / SEVENZIP_VERSION / arch
+-    name = f'7z{SEVENZIP_VERSION.replace(".", "")}-linux-{arch}.tar.xz'
+-    archive = verified_download(
+-        f'https://github.com/ip7z/7zip/releases/download/{SEVENZIP_VERSION}/{name}',
+-        directory / name, checksum,
+-    )
+-    # Read exact regular members, retaining the upstream notices alongside 7zzs.
+-    # Compare with the verified archive before ever executing a cached binary.
+-    with tarfile.open(archive, 'r:xz') as source:
+-        for name in ('7zzs', 'License.txt', 'readme.txt', 'MANUAL/general/license.htm'):
+-            member = source.getmember(name)
+-            if not member.isfile():
+-                raise ValueError(f'Unexpected 7-Zip member: {name}')
+-            data = source.extractfile(member).read()
+-            target = directory / name
+-            if not target.is_file() or target.read_bytes() != data:
+-                atomic_write(target, data, 0o700 if name == '7zzs' else 0o600)
+-    return directory / '7zzs'
+ 
+ 
+ def safe_name(name):
+--- a/tests/test_optiscaler.py
++++ b/tests/test_optiscaler.py
+@@ -580,28 +580,15 @@
+                 nightly.prepare(self.item, self.cache, self.root / 'stage')
+         run.assert_called_once()
+ 
+-    def test_extractor_bootstrap_and_cache_repair(self):
+-        archive = io.BytesIO()
+-        files = {'7zzs': b'static executable', '7zz': b'unused dynamic executable',
+-                 'License.txt': b'license', 'readme.txt': b'readme',
+-                 'MANUAL/general/license.htm': b'license details'}
+-        with tarfile.open(fileobj=archive, mode='w:xz') as output:
+-            for name, data in files.items():
+-                member = tarfile.TarInfo(name)
+-                member.size = len(data)
+-                output.addfile(member, io.BytesIO(data))
+-        data = archive.getvalue()
+-        checksum = hashlib.sha256(data).hexdigest()
+-        with mock.patch.object(nightly.platform, 'machine', return_value='x86_64'), \
+-                mock.patch.dict(nightly.SEVENZIP_BUILDS, {'x86_64': ('x64', checksum)}), \
+-                mock.patch.object(nightly.urllib.request, 'urlopen', return_value=io.BytesIO(data)) as request:
+-            tool = nightly.extractor(self.cache)
+-            self.assertTrue(tool.stat().st_mode & 0o100)
+-            self.assertEqual(tool.read_bytes(), files['7zzs'])
+-            self.assertEqual((tool.parent / 'License.txt').read_bytes(), b'license')
+-            tool.write_bytes(b'corrupted')
+-            self.assertEqual(nightly.extractor(self.cache).read_bytes(), files['7zzs'])
+-        request.assert_called_once()
++    def test_system_extractor_is_shared_with_fsr(self):
++        from upscalers import sevenzip
++        self.assertIs(nightly.extractor, sevenzip.extractor)
++        with mock.patch.object(sevenzip.shutil, 'which', side_effect=lambda name, **kw:
++                               '/system/7z' if name == '7z' else None), \
++                mock.patch.object(sevenzip.urllib.request, 'urlopen') as download:
++            self.assertEqual(nightly.extractor(self.cache), Path('/system/7z'))
++        download.assert_not_called()
++        self.assertFalse((self.cache / '7zip').exists())
+ 
+ 
+ if __name__ == '__main__':
