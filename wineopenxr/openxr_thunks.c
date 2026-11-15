@@ -8232,39 +8232,7 @@ static const XrSpatialCapabilityConfigurationBaseHeaderEXT * const*convert_XrSpa
     unsigned int out_elem_size;
 
     if (!in || !count) return NULL;
-    switch(((XrSpatialCapabilityConfigurationBaseHeaderEXT32 *)UlongToPtr(in[0]))->type)
-    {
-    case XR_TYPE_SPATIAL_CAPABILITY_CONFIGURATION_ANCHOR_EXT:
-        out_elem_size = sizeof(XrSpatialCapabilityConfigurationAnchorEXT);
-        break;
-    case XR_TYPE_SPATIAL_CAPABILITY_CONFIGURATION_APRIL_TAG_EXT:
-        out_elem_size = sizeof(XrSpatialCapabilityConfigurationAprilTagEXT);
-        break;
-    case XR_TYPE_SPATIAL_CAPABILITY_CONFIGURATION_ARUCO_MARKER_EXT:
-        out_elem_size = sizeof(XrSpatialCapabilityConfigurationArucoMarkerEXT);
-        break;
-    case XR_TYPE_SPATIAL_CAPABILITY_CONFIGURATION_DEPTH_RAYCAST_ANDROID:
-        out_elem_size = sizeof(XrSpatialCapabilityConfigurationDepthRaycastANDROID);
-        break;
-    case XR_TYPE_SPATIAL_CAPABILITY_CONFIGURATION_IMAGE_TRACKING_EXT:
-        out_elem_size = sizeof(XrSpatialCapabilityConfigurationImageTrackingEXT);
-        break;
-    case XR_TYPE_SPATIAL_CAPABILITY_CONFIGURATION_MICRO_QR_CODE_EXT:
-        out_elem_size = sizeof(XrSpatialCapabilityConfigurationMicroQrCodeEXT);
-        break;
-    case XR_TYPE_SPATIAL_CAPABILITY_CONFIGURATION_OBJECT_TRACKING_ANDROID:
-        out_elem_size = sizeof(XrSpatialCapabilityConfigurationObjectTrackingANDROID);
-        break;
-    case XR_TYPE_SPATIAL_CAPABILITY_CONFIGURATION_PLANE_TRACKING_EXT:
-        out_elem_size = sizeof(XrSpatialCapabilityConfigurationPlaneTrackingEXT);
-        break;
-    case XR_TYPE_SPATIAL_CAPABILITY_CONFIGURATION_QR_CODE_EXT:
-        out_elem_size = sizeof(XrSpatialCapabilityConfigurationQrCodeEXT);
-        break;
-    default:
-        out_elem_size = sizeof(XrSpatialCapabilityConfigurationBaseHeaderEXT);
-        break;
-    }
+    out_elem_size = sizeof(XrSpatialCapabilityConfigurationBaseHeaderEXT_any);
 
     out = conversion_context_alloc(ctx, count * sizeof(*out));
     for (i = 0; i < count; i++)
@@ -9499,39 +9467,7 @@ static const XrCompositionLayerBaseHeader * const*convert_XrCompositionLayerBase
     unsigned int out_elem_size;
 
     if (!in || !count) return NULL;
-    switch(in[0]->type)
-    {
-    case XR_TYPE_COMPOSITION_LAYER_CUBE_KHR:
-        out_elem_size = sizeof(XrCompositionLayerCubeKHR);
-        break;
-    case XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR:
-        out_elem_size = sizeof(XrCompositionLayerCylinderKHR);
-        break;
-    case XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR:
-        out_elem_size = sizeof(XrCompositionLayerEquirect2KHR);
-        break;
-    case XR_TYPE_COMPOSITION_LAYER_EQUIRECT_KHR:
-        out_elem_size = sizeof(XrCompositionLayerEquirectKHR);
-        break;
-    case XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_ANDROID:
-        out_elem_size = sizeof(XrCompositionLayerPassthroughANDROID);
-        break;
-    case XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB:
-        out_elem_size = sizeof(XrCompositionLayerPassthroughFB);
-        break;
-    case XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_HTC:
-        out_elem_size = sizeof(XrCompositionLayerPassthroughHTC);
-        break;
-    case XR_TYPE_COMPOSITION_LAYER_PROJECTION:
-        out_elem_size = sizeof(XrCompositionLayerProjection);
-        break;
-    case XR_TYPE_COMPOSITION_LAYER_QUAD:
-        out_elem_size = sizeof(XrCompositionLayerQuad);
-        break;
-    default:
-        out_elem_size = sizeof(XrCompositionLayerBaseHeader);
-        break;
-    }
+    out_elem_size = sizeof(XrCompositionLayerBaseHeader_any);
 
     out = conversion_context_alloc(ctx, count * sizeof(*out));
     for (i = 0; i < count; i++)
@@ -10158,39 +10094,7 @@ static const XrCompositionLayerBaseHeader * const*convert_XrCompositionLayerBase
     unsigned int out_elem_size;
 
     if (!in || !count) return NULL;
-    switch(((XrCompositionLayerBaseHeader32 *)UlongToPtr(in[0]))->type)
-    {
-    case XR_TYPE_COMPOSITION_LAYER_CUBE_KHR:
-        out_elem_size = sizeof(XrCompositionLayerCubeKHR);
-        break;
-    case XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR:
-        out_elem_size = sizeof(XrCompositionLayerCylinderKHR);
-        break;
-    case XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR:
-        out_elem_size = sizeof(XrCompositionLayerEquirect2KHR);
-        break;
-    case XR_TYPE_COMPOSITION_LAYER_EQUIRECT_KHR:
-        out_elem_size = sizeof(XrCompositionLayerEquirectKHR);
-        break;
-    case XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_ANDROID:
-        out_elem_size = sizeof(XrCompositionLayerPassthroughANDROID);
-        break;
-    case XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB:
-        out_elem_size = sizeof(XrCompositionLayerPassthroughFB);
-        break;
-    case XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_HTC:
-        out_elem_size = sizeof(XrCompositionLayerPassthroughHTC);
-        break;
-    case XR_TYPE_COMPOSITION_LAYER_PROJECTION:
-        out_elem_size = sizeof(XrCompositionLayerProjection);
-        break;
-    case XR_TYPE_COMPOSITION_LAYER_QUAD:
-        out_elem_size = sizeof(XrCompositionLayerQuad);
-        break;
-    default:
-        out_elem_size = sizeof(XrCompositionLayerBaseHeader);
-        break;
-    }
+    out_elem_size = sizeof(XrCompositionLayerBaseHeader_any);
 
     out = conversion_context_alloc(ctx, count * sizeof(*out));
     for (i = 0; i < count; i++)
@@ -20858,18 +20762,7 @@ static const XrBindingModificationBaseHeaderKHR * const*convert_XrBindingModific
     unsigned int out_elem_size;
 
     if (!in || !count) return NULL;
-    switch(((XrBindingModificationBaseHeaderKHR32 *)UlongToPtr(in[0]))->type)
-    {
-    case XR_TYPE_INTERACTION_PROFILE_ANALOG_THRESHOLD_VALVE:
-        out_elem_size = sizeof(XrInteractionProfileAnalogThresholdVALVE);
-        break;
-    case XR_TYPE_INTERACTION_PROFILE_DPAD_BINDING_EXT:
-        out_elem_size = sizeof(XrInteractionProfileDpadBindingEXT);
-        break;
-    default:
-        out_elem_size = sizeof(XrBindingModificationBaseHeaderKHR);
-        break;
-    }
+    out_elem_size = sizeof(XrBindingModificationBaseHeaderKHR_any);
 
     out = conversion_context_alloc(ctx, count * sizeof(*out));
     for (i = 0; i < count; i++)
