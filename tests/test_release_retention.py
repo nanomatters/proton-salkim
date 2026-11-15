@@ -142,6 +142,32 @@ class ReleaseRetention(unittest.TestCase):
         self.assertLess(time.monotonic() - start, 1)
         self.assertEqual(self.versions(), set(manifests))
 
+    def test_concurrent_fallback_verification_does_not_lose_selection(self):
+        manifests = self.seed()
+        ready, release = threading.Event(), threading.Event()
+        original, main = storage.verified_files, threading.current_thread()
+
+        def slow_check(directory, files):
+            if threading.current_thread() is not main:
+                ready.set()
+                if not release.wait(2):
+                    raise AssertionError('fallback verification was not released')
+            return original(directory, files)
+
+        with mock.patch.object(storage, 'verified_files', side_effect=slow_check), ThreadPoolExecutor(1) as workers:
+            future = workers.submit(storage.cached_fallback, self.root, manifests['5'], 'busy', lambda _: None)
+            self.assertTrue(ready.wait(2))
+            timer = threading.Timer(.05, release.set)
+            timer.start()
+            try:
+                selected = storage.prepare_libraries(self.env, 'dlss', manifests['5'])
+                self.assertEqual(selected, self.root / '5')
+                self.assertEqual(future.result(timeout=2), selected)
+            finally:
+                release.set()
+                timer.join()
+        self.assertIn('5', json.loads((self.root / '.retention.json').read_text())['used'])
+
     def test_brief_contention_allows_fallback_selection(self):
         manifests = self.seed()
         with (self.root / '.retention.lock').open('a+b') as lock:
@@ -235,6 +261,16 @@ class ReleaseRetention(unittest.TestCase):
         self.select(manifests['5'])
         self.assertEqual(self.versions(), set(manifests))
 
+    def test_explicit_alias_to_managed_release_is_protected(self):
+        self.seed()
+        self.boot.return_value = '22222222-2222-2222-2222-222222222222'
+        alias = self.data / 'alias'
+        alias.symlink_to(self.root / '1', target_is_directory=True)
+        env = {**self.env, 'WINE_DLSS_PROVIDER': str(alias)}
+        self.assertEqual(storage.directory_override(env, 'WINE_DLSS_PROVIDER'), alias)
+        state = json.loads((self.root / '.retention.json').read_text())
+        self.assertIn('1', state['used'])
+        self.assertEqual(state['boot_id'], '22222222-2222-2222-2222-222222222222')
 
     def test_explicit_fsr_provider_pins_cached_release_without_pruning(self):
         root = self.data / 'proton/components/fsr'

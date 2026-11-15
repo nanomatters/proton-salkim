@@ -61,8 +61,6 @@ _config_envvars = {
     'wow64': 'PROTON_USE_WOW64',
     'dlss': 'PROTON_DLSS_UPGRADE',
     'xess': 'PROTON_XESS_UPGRADE',
-    'ffx3': 'PROTON_FFX3_UPGRADE',
-    'ffx4': 'PROTON_FFX4_UPGRADE',
     'optiscaler': 'PROTON_USE_OPTISCALER',
 }
 
@@ -103,8 +101,7 @@ def log_environment(env: dict, log_file: io.TextIOWrapper):
         'PROTON_XESS_UPGRADE',
         'PROTON_UPSCALER_UPGRADE',
         'WINE_FSR4_PROVIDER',
-        'PROTON_FFX3_UPGRADE',
-        'PROTON_FFX4_UPGRADE',
+        'WINE_FFX_PROVIDER',
         'PROTON_MLFG_UPGRADE',
         'PROTON_LOCAL_SHADER_CACHE',
         'PROTON_RADV',

@@ -1,0 +1,507 @@
+From: Erhan Bilgili <erhan.bilgili@gmail.com>
+Subject: [PATCH] upscalers: Use the shared FidelityFX SDK.
+
+---
+--- a/tests/test_optiscaler.py
++++ b/tests/test_optiscaler.py
+@@ -27,6 +27,7 @@
+ nightly = importlib.import_module(package.__name__ + '.optiscaler_nightly')
+ upscalers = importlib.import_module(package.__name__ + '.upscalers')
+ streamline_setup = upscalers.streamline.setup
++optiscaler_ffx_setup = upscalers.__setup_optiscaler_ffx
+ 
+ INI = (b'; Header\n[Libraries]\n; Library location\nOptiDllPath=auto\n'
+        b'[Hotfix]\nCheckForUpdate=auto\n[ProcessFilter]\nProcessExclusionList=auto\n')
+@@ -57,6 +58,9 @@
+         stream = mock.patch.object(upscalers.streamline, 'setup')
+         self.streamline_setup = stream.start()
+         self.addCleanup(stream.stop)
++        sdk = mock.patch.object(upscalers, '__setup_optiscaler_ffx')
++        self.sdk_setup = sdk.start()
++        self.addCleanup(sdk.stop)
+ 
+     def package(self, item, cache, stage):
+         files = {'OptiScaler.dll': b'new DLL', 'OptiScaler.ini': INI,
+@@ -136,6 +140,7 @@
+         self.bundled_dependencies()
+         env, calls = self.run_upscalers()
+         self.assertEqual(calls, [('dlss', 'default')])
++        self.sdk_setup.assert_called_once_with(env, self.compat, self.prefix, bundled=True)
+         self.assertEqual(env['WINE_OPTISCALER_NAME'], 'dxgi.dll')
+         self.assertNotIn('WINE_UPSCALER_REPLACE', env)
+ 
+@@ -148,7 +153,7 @@
+             'PROTON_XESS_UPGRADE': 'test-xess', 'PROTON_FFX3_UPGRADE': 'test-ffx3',
+             'PROTON_FFX4_UPGRADE': 'test-ffx4',
+         })
+-        for item in [('xess', 'test-xess'), ('ffx3', 'test-ffx3'), ('ffx4', 'test-ffx4')]:
++        for item in [('xess', 'test-xess')]:
+             self.assertIn(item, calls)
+         self.assertEqual((self.destination / 'libxess.dll').read_bytes(), files['libxess.dll'])
+         self.assertTrue((self.destination / 'amd_fidelityfx_vk.dll').exists())
+@@ -162,7 +167,7 @@
+         tracking.write_text(json.dumps(records))
+         _, calls = self.run_upscalers()
+         self.assertIn(('xess', 'default'), calls)
+-        self.assertIn(('ffx3', '1.0.1.41314'), calls)
++        self.assertNotIn('ffx3', [name for name, _ in calls])
+ 
+     def test_nightly_fallback_to_stable_request_still_uses_bundled_dependencies(self):
+         self.bundled_dependencies()
+@@ -175,8 +180,8 @@
+         self.dependency_files('xess_files', {'libxess.dll': b'keep'})
+         env, calls = self.run_upscalers(optiscaler_enabled=False)
+         self.assertIn(('xess', 'default'), calls)
+-        self.assertIn(('ffx3', '1.0.1.41314'), calls)
+-        self.assertEqual(set(env['WINE_UPSCALER_REPLACE'].split(',')), {'dlss', 'xess', 'ffx3'})
++        self.sdk_setup.assert_not_called()
++        self.assertEqual(set(env['WINE_UPSCALER_REPLACE'].split(',')), {'dlss', 'xess'})
+         self.assertNotIn('WINE_OPTISCALER_NAME', env)
+         self.assertTrue((self.destination / 'libxess.dll').exists())
+ 
+@@ -189,11 +194,11 @@
+         self.dependency_files('xess_files', {'unrelated.dll': b'keep'})
+         before_ini = (self.destination / 'OptiScaler.ini').read_bytes()
+         self.run_upscalers()
+-        for name in ('libxess.dll', 'libxell.dll', 'amd_fidelityfx_vk.dll', 'amd_fidelityfx_dx12.dll'):
++        for name in ('libxess.dll', 'libxell.dll'):
+             self.assertFalse((self.destination / name).exists())
+         records = json.loads((self.compat / 'upscaler_files').read_text())
+         self.assertEqual(set(records['xess_files']), {f'{nightly.ROOT}/unrelated.dll'})
+-        self.assertEqual(records['ffx3_files'], {})
++        self.assertTrue(records['ffx3_files'])
+         self.assertTrue(upscalers.check_optiscaler(self.compat, self.prefix, ignore_version=True))
+         self.assertEqual((self.destination / 'OptiScaler.ini').read_bytes(), before_ini)
+         self.run_upscalers()  # Migration is idempotent.
+@@ -288,7 +293,7 @@
+         with mock.patch.object(nightly, 'resolve', side_effect=OSError('offline')), \
+                 mock.patch.object(upscalers, 'setup_upscaler', return_value=True) as setup:
+             upscalers.setup_upscalers({'optiscaler'}, env, self.compat, self.prefix)
+-        self.assertEqual([call.args[0] for call in setup.call_args_list], ['dlss', 'xess', 'ffx3'])
++        self.assertEqual([call.args[0] for call in setup.call_args_list], ['dlss', 'xess'])
+         self.assertEqual(env['WINE_OPTISCALER_NAME'], 'dxgi.dll')
+         self.assertEqual((self.destination / 'libxess.dll').read_bytes(), b'keep stable dependency')
+ 
+@@ -296,10 +301,194 @@
+         env = {'PROTON_XESS_UPGRADE': 'custom'}
+         with mock.patch.object(upscalers, 'setup_upscaler', return_value=True) as setup, \
+                 mock.patch.object(upscalers, 'setup_optiscaler') as opti:
+-            upscalers.setup_upscalers({'xess', 'ffx3'}, env, self.compat, self.prefix)
+-        self.assertEqual([call.args[0] for call in setup.call_args_list], ['xess', 'ffx3'])
+-        self.assertEqual(set(env['WINE_UPSCALER_REPLACE'].split(',')), {'xess', 'ffx3'})
++            upscalers.setup_upscalers({'xess'}, env, self.compat, self.prefix)
++        self.assertEqual([call.args[0] for call in setup.call_args_list], ['xess'])
++        self.assertEqual(set(env['WINE_UPSCALER_REPLACE'].split(',')), {'xess'})
+         opti.assert_not_called()
++
++    def component_upgrades(self):
++        from upscalers import ffx
++        return (
++            ('ffx', ffx, optiscaler_ffx_setup, 'FfxDx12Path', 'FfxVkPath', 'amd_fidelityfx_dx12.dll'),
++        )
++
++    def test_failed_automatic_component_upgrade_resets_managed_paths(self):
++        from upscalers.storage import ComponentError
++        ini = self.destination / 'OptiScaler.ini'
++        for name, component, setup, key, other, filename in self.component_upgrades():
++            with self.subTest(component=name):
++                old = self.root / 'proton/components' / name / 'old'
++                path = old / filename if filename else old
++                value = r'\\?\unix' + str(path).replace('/', '\\')
++                original = '[Libraries]\n; keep comment\n' + key + '=' + value + '\nUnrelated=C:\\custom\\runtime.dll\n'
++                ini.write_text(original)
++                env = {'XDG_DATA_HOME': str(self.root), 'PROTON_UPSCALER_UPGRADE': '1'}
++                with mock.patch.object(component, 'prepare', side_effect=ComponentError('no verified cache')):
++                    setup(env, self.compat, self.prefix)
++                self.assertIn(key + '=auto', ini.read_text())
++                self.assertIn('Unrelated=C:\\custom\\runtime.dll', ini.read_text())
++                self.assertIn('; keep comment', ini.read_text())
++                ini.write_text(original)
++                env['WINE_' + name.upper() + '_PROVIDER'] = '/manual/runtime'
++                with mock.patch.object(component, 'prepare', side_effect=ComponentError('invalid manual path')):
++                    setup(env, self.compat, self.prefix)
++                self.assertEqual(ini.read_text(), original)
++
++    def test_custom_component_paths_do_not_retain_automatic_shared_paths(self):
++        from upscalers.storage import ComponentError
++        ini = self.destination / 'OptiScaler.ini'
++        for name, component, setup, key, other, filename in self.component_upgrades():
++            with self.subTest(component=name):
++                old = self.root / 'proton/components' / name / 'old'
++                path = old / filename if filename else old
++                original = '[Libraries]\n; keep comment\n' + key + '=' + r'\\?\unix' + str(path).replace('/', '\\') + '\n' + other + '=C:\\custom\\runtime.dll\n'
++                ini.write_text(original)
++                env = {'XDG_DATA_HOME': str(self.root), 'PROTON_UPSCALER_UPGRADE': '1'}
++                with mock.patch.object(component, 'prepare', side_effect=ComponentError('invalid managed cache')):
++                    setup(env, self.compat, self.prefix)
++                self.assertIn(key + '=auto', ini.read_text())
++                self.assertIn(other + '=C:\\custom\\runtime.dll', ini.read_text())
++                self.assertIn('; keep comment', ini.read_text())
++                ini.write_text(original)
++                env['WINE_' + name.upper() + '_PROVIDER'] = '/manual/runtime'
++                with mock.patch.object(component, 'prepare', side_effect=ComponentError('invalid manual path')):
++                    setup(env, self.compat, self.prefix)
++                self.assertEqual(ini.read_text(), original)
++
++    def test_verified_cached_component_is_selected_when_update_fails(self):
++        from copy import deepcopy
++        from upscalers import storage
++        ini = self.destination / 'OptiScaler.ini'
++        for name, component, setup, key, other, filename in self.component_upgrades():
++            with self.subTest(component=name):
++                manifest = deepcopy(component.catalog())
++                manifest['version'] = '1.0'
++                for library, item in manifest['files'].items():
++                    payload = library.encode()
++                    item.update(size=len(payload), sha256=hashlib.sha256(payload).hexdigest())
++                def download(item, target, *args, **kwargs):
++                    Path(target).write_bytes(Path(target).name.encode())
++                env = {'XDG_DATA_HOME': str(self.root), 'PROTON_UPSCALER_UPGRADE': '1'}
++                with mock.patch.object(component, 'catalog', return_value=manifest), \
++                        mock.patch.object(storage, 'download_file', side_effect=download):
++                    old = component.prepare(env)
++                manifest['version'] = '2.0'
++                ini.write_text('[Libraries]\n' + key + '=auto\n')
++                with mock.patch.object(component, 'catalog', return_value=manifest), \
++                        mock.patch.object(storage, 'download_file', side_effect=OSError('offline')):
++                    setup(env, self.compat, self.prefix)
++                expected = old / filename if filename else old
++                self.assertIn(key + '=' + r'\\?\unix' + str(expected).replace('/', '\\'), ini.read_text())
++                self.assertNotIn('2.0', ini.read_text())
++
++    def test_default_leaves_fresh_and_custom_ini_untouched(self):
++        ini = self.destination / 'OptiScaler.ini'
++        for name, component, setup, key, other, filename in self.component_upgrades():
++            for value in ('auto', r'C:\custom\runtime.dll'):
++                with self.subTest(component=name, value=value):
++                    original = '[Libraries]\n; keep comment\n' + key + '=' + value + '\n'
++                    ini.write_text(original)
++                    with mock.patch.object(component, 'prepare') as prepare:
++                        setup({}, self.compat, self.prefix)
++                    prepare.assert_not_called()
++                    self.assertEqual(ini.read_text(), original)
++
++    def test_disabled_component_upgrades_reset_only_managed_paths(self):
++        ini = self.destination / 'OptiScaler.ini'
++        for name, component, setup, key, other, filename in self.component_upgrades():
++            with self.subTest(component=name):
++                old = self.root / 'proton/components' / name / 'old'
++                old.mkdir(parents=True)
++                path = old / filename if filename else old
++                if filename:
++                    path.write_bytes(b'old runtime')
++                ini.write_text('[Libraries]\n; keep comment\n' + key + '=' + r'\\?\unix' +
++                               str(path).replace('/', '\\') + '\n' + other + '=C:\\custom\\runtime.dll\n')
++                env = {'PROTON_UPSCALER_UPGRADE': '0', 'XDG_DATA_HOME': str(self.root)}
++                with mock.patch.object(component, 'prepare') as prepare:
++                    setup(env, self.compat, self.prefix)
++                prepare.assert_not_called()
++                text = ini.read_text()
++                self.assertIn(key + '=auto', text)
++                self.assertIn(other + '=C:\\custom\\runtime.dll', text)
++                self.assertIn('; keep comment', text)
++                self.assertTrue(path.exists())
++
++    def test_disabled_component_upgrades_allow_explicit_provider(self):
++        from upscalers import progress
++        ini = self.destination / 'OptiScaler.ini'
++        manual = self.root / 'manual'
++        manual.mkdir()
++        for name, component, setup, key, other, filename in self.component_upgrades():
++            for bundled in ((False, True) if name != 'dlss' else (False,)):
++                with self.subTest(component=name, bundled=bundled):
++                    ini.write_text('[Libraries]\n' + key + '=auto\n')
++                    env = {'PROTON_UPSCALER_UPGRADE': '0',
++                           'WINE_' + name.upper() + '_PROVIDER': str(manual)}
++                    kwargs = {'bundled': bundled} if name != 'dlss' else {}
++                    with mock.patch.object(component, 'prepare', return_value=manual) as prepare, \
++                            mock.patch.object(progress, 'Progress'):
++                        setup(env, self.compat, self.prefix, **kwargs)
++                    prepare.assert_called_once()
++                    self.assertEqual(prepare.call_args.args[0], env)
++                    path = manual / filename if filename else manual
++                    self.assertIn(key + '=' + r'\\?\unix' + str(path).replace('/', '\\'), ini.read_text())
++
++    def test_stable_ffx_uses_shared_files_and_preserves_custom_choices(self):
++        from upscalers import ffx, progress
++        shared = self.root / 'shared SDK'
++        shared.mkdir()
++        ini = self.destination / 'OptiScaler.ini'
++        ini.write_text('[Libraries]\n; keep this\nFfxDx12Path=auto\nFfxVkPath=C:\\custom\\vk.dll\n')
++        with mock.patch.object(ffx, 'prepare', return_value=shared) as prepare, \
++                mock.patch.object(progress, 'Progress'):
++            optiscaler_ffx_setup({'PROTON_UPSCALER_UPGRADE': '1'}, self.compat, self.prefix)
++        self.assertIn('FfxDx12Path=\\\\?\\unix' + str(shared / 'amd_fidelityfx_dx12.dll').replace('/', '\\'), ini.read_text())
++        self.assertIn('FfxVkPath=C:\\custom\\vk.dll', ini.read_text())
++        self.assertIn('; keep this', ini.read_text())
++        self.assertFalse(list(self.destination.glob('amd_fidelityfx*.dll')))
++        prepare.assert_called_once()
++
++    def test_stable_ffx_follows_manifest_updates(self):
++        from upscalers import ffx, progress
++        old = self.root / 'proton/components/ffx/old/amd_fidelityfx_dx12.dll'
++        new = self.root / 'proton/components/ffx/new'
++        ini = self.destination / 'OptiScaler.ini'
++        ini.write_text('[Libraries]\nFfxDx12Path=' + r'\\?\unix' + str(old).replace('/', '\\') + '\n')
++        with mock.patch.object(ffx, 'prepare', return_value=new), \
++                mock.patch.object(progress, 'Progress'):
++            optiscaler_ffx_setup({'XDG_DATA_HOME': str(self.root), 'PROTON_UPSCALER_UPGRADE': '1'}, self.compat, self.prefix)
++        self.assertIn(r'\ffx\new\amd_fidelityfx_dx12.dll', ini.read_text())
++        self.assertNotIn(r'\ffx\old\amd_fidelityfx_dx12.dll', ini.read_text())
++
++    def test_nightly_clears_only_managed_sdk_paths(self):
++        from upscalers import ffx
++        managed = self.root / 'proton/components/ffx/old/amd_fidelityfx_dx12.dll'
++        ini = self.destination / 'OptiScaler.ini'
++        ini.write_text('[Libraries]\nFfxDx12Path=' + r'\\?\unix' + str(managed).replace('/', '\\') +
++                       '\nFfxVkPath=C:\\custom\\vk.dll\n')
++        with mock.patch.object(ffx, 'prepare') as prepare:
++            optiscaler_ffx_setup({'XDG_DATA_HOME': str(self.root), 'PROTON_UPSCALER_UPGRADE': '1'}, self.compat, self.prefix, bundled=True)
++        self.assertIn('FfxDx12Path=auto', ini.read_text())
++        self.assertIn('FfxVkPath=C:\\custom\\vk.dll', ini.read_text())
++        prepare.assert_not_called()
++
++    def test_stable_ffx_failure_does_not_rewrite_configuration(self):
++        from upscalers import ffx, progress
++        ini = self.destination / 'OptiScaler.ini'
++        ini.write_bytes(INI)
++        with mock.patch.object(ffx, 'prepare', side_effect=OSError('offline')), \
++                mock.patch.object(progress, 'Progress'):
++            optiscaler_ffx_setup({'PROTON_UPSCALER_UPGRADE': '1'}, self.compat, self.prefix)
++        self.assertEqual(ini.read_bytes(), INI)
++
++    def test_no_legacy_ffx_controls_remain_active(self):
++        for config in ({'ffx3'}, {'ffx4'}, {'ffx3', 'ffx4'}):
++            env = {'PROTON_FFX3_UPGRADE': '1', 'PROTON_FFX4_UPGRADE': '1'}
++            with mock.patch.object(upscalers, 'setup_upscaler') as setup:
++                upscalers.setup_upscalers(config, env, self.compat, self.prefix)
++            setup.assert_not_called()
++            self.assertNotIn('WINE_UPSCALER_REPLACE', env)
+ 
+     def test_streamline_only_follows_installed_nightly(self):
+         archive, item = self.stable_archive()
+--- a/upscalers.py
++++ b/upscalers.py
+@@ -87,8 +87,6 @@
+ __dlss_section = 'dlss_files'
+ __xess_section = 'xess_files'
+ __opti_section = 'opti_files'
+-__ffx3_section = 'ffx3_files'
+-__ffx4_section = 'ffx4_files'
+ __version_file = 'upscaler_files'
+ 
+ 
+@@ -121,36 +119,10 @@
+     }
+ 
+ 
+-def __get_ffx3_dlls(version: str = 'default') -> dict:
+-    return {
+-        'drive_c/windows/system32/umu/amd_fidelityfx_vk.dll': __get_dll_manifest(
+-            'fsr_31_vk', version
+-        ),
+-        'drive_c/windows/system32/umu/amd_fidelityfx_dx12.dll': __get_dll_manifest(
+-            'fsr_31_dx12', version
+-        ),
+-    }
+-
+-
+-def __get_ffx4_dlls(version: str = 'default') -> dict:
+-    return {
+-        'drive_c/windows/system32/umu/amd_fidelityfx_framegeneration_dx12.dll': __get_dll_manifest(
+-            'fsr_40_fg_dx12', version
+-        ),
+-        'drive_c/windows/system32/umu/amd_fidelityfx_loader_dx12.dll': __get_dll_manifest(
+-            'fsr_40_ldr_dx12', version
+-        ),
+-        'drive_c/windows/system32/umu/amd_fidelityfx_upscaler_dx12.dll': __get_dll_manifest(
+-            'fsr_40_up_dx12', version
+-        ),
+-    }
+-
+ def __get_upscaler_items(name: str, version: str) -> tuple[dict, Callable, str]:
+     upscalers = {
+         'dlss': (__get_dlss_dlls, __download_extract_zip, __dlss_section),
+         'xess': (__get_xess_dlls, __download_extract_zip, __xess_section),
+-        'ffx3': (__get_ffx3_dlls, __download_extract_zip, __ffx3_section),
+-        'ffx4': (__get_ffx4_dlls, __download_extract_zip, __ffx4_section),
+     }
+     get_items, dlfunc, section = upscalers[name]
+     try:
+@@ -265,7 +237,7 @@
+ ) -> bool:
+     """Check for upscaler files and their versions
+ 
+-    name: the name of the upscaler, possible values dlss, xess, ffx3, ffx4
++    name: the name of the upscaler, possible values dlss, xess
+     version: the version of the upscaler dll to download
+     ignore_version: ignore version mismatch but still check if the dlls are present
+     """
+@@ -434,7 +406,7 @@
+ ) -> None:
+     """Check for upscaler files and their versions
+ 
+-    name: the name of the upscaler, possible values dlss, xess, ffx3, ffx4
++    name: the name of the upscaler, possible values dlss, xess
+     version: the version of the upscaler dll to download
+     """
+     if check_upscaler(name, compat_dir, prefix_dir, version, ignore_version=False):
+@@ -624,13 +596,10 @@
+     return env[key] if env.get(key, '0') not in {'0', '1'} else fallback
+ 
+ 
+-def __prune_optiscaler_dependencies(name, compat_dir, prefix_dir):
++def __prune_optiscaler_xess(compat_dir, prefix_dir):
+     """Remove unchanged standalone files superseded by a validated nightly."""
+-    dlls = {
+-        'xess': ('libxess.dll', 'libxess_dx11.dll', 'libxell.dll', 'libxess_fg.dll'),
+-        'ffx3': ('amd_fidelityfx_dx12.dll', 'amd_fidelityfx_vk.dll'),
+-    }[name]
+-    section = __xess_section if name == 'xess' else __ffx3_section
++    dlls = ('libxess.dll', 'libxess_dx11.dll', 'libxell.dll', 'libxess_fg.dll')
++    section = __xess_section
+     destination = Path(prefix_dir) / nightly.ROOT
+     try:
+         with open(Path(compat_dir) / '.optiscaler.lock', 'a') as lock:
+@@ -648,7 +617,7 @@
+             if ntpath.normcase(ntpath.normpath(libraries.get('OptiDllPath', 'auto'))) != \
+                     ntpath.normcase(r'c:\windows\system32\umu\OptiScaler'):
+                 return
+-            prefixes = ('xess', 'xefg', 'xell') if name == 'xess' else ('ffx',)
++            prefixes = ('xess', 'xefg', 'xell')
+             if any(key.startswith(prefixes) and value.strip().lower() not in ('', 'auto')
+                    for key, value in libraries.items()):
+                 return
+@@ -663,21 +632,11 @@
+                     continue
+                 if nightly.file_hash(target, 'md5') != checksum.lower():
+                     continue
+-                replacements = (dll,)
+-                # Newer FidelityFX packages split the old combined DX12 library.
+-                if dll == 'amd_fidelityfx_dx12.dll' and \
+-                        f'{nightly.ROOT}/OptiScaler/{dll}' not in package:
+-                    replacements = ('amd_fidelityfx_loader_dx12.dll',
+-                                    'amd_fidelityfx_upscaler_dx12.dll',
+-                                    'amd_fidelityfx_framegeneration_dx12.dll')
+-                for replacement in replacements:
+-                    bundled = f'{nightly.ROOT}/OptiScaler/{replacement}'
+-                    expected = package.get(bundled, {}).get('md5_hash')
+-                    file = Path(prefix_dir) / bundled
+-                    if (not expected or file.is_symlink() or not file.is_file()
+-                            or nightly.file_hash(file, 'md5') != expected.lower()):
+-                        break
+-                else:
++                bundled = f'{nightly.ROOT}/OptiScaler/{dll}'
++                expected = package.get(bundled, {}).get('md5_hash')
++                file = Path(prefix_dir) / bundled
++                if (expected and not file.is_symlink() and file.is_file()
++                        and nightly.file_hash(file, 'md5') == expected.lower()):
+                     removed.append(dll)
+                     del remaining[path]
+             if removed:
+@@ -688,7 +647,50 @@
+     except (KeyError, StopIteration, FileNotFoundError):
+         return
+     except Exception as error:
+-        log.warn(f'Keeping standalone {name.upper()} files: {error}')
++        log.warn(f'Keeping standalone XeSS files: {error}')
++
++
++def __setup_optiscaler_ffx(env, compat_dir, prefix_dir, *, bundled=False):
++    """Stable OptiScaler releases use the shared SDK instead of prefix copies."""
++    try:
++        from upscalers import ffx, progress
++        from upscalers.storage import data_home
++
++        with open(Path(compat_dir) / '.optiscaler.lock', 'a') as lock:
++            fcntl.flock(lock, fcntl.LOCK_EX)
++            ini = Path(prefix_dir) / nightly.ROOT / 'OptiScaler.ini'
++            original = ini.read_bytes()
++            parser = configparser.ConfigParser(interpolation=None)
++            parser.read_string(original.decode('utf-8-sig'))
++            libraries = parser['Libraries'] if parser.has_section('Libraries') else {}
++            options = {'FfxDx12Path': 'amd_fidelityfx_dx12.dll', 'FfxVkPath': 'amd_fidelityfx_vk.dll'}
++            shared = r'\\?\unix' + str(data_home(env) / 'proton/components/ffx').replace('/', '\\') + '\\'
++            managed = {key for key, name in options.items()
++                       if libraries.get(key, '').startswith(shared)
++                       and libraries[key][len(shared):].split('\\')[1:] == [name]}
++            if (bundled or env.get('PROTON_UPSCALER_UPGRADE') != '1') and not env.get('WINE_FFX_PROVIDER'):
++                changes = {('Libraries', key): 'auto' for key in managed}
++            else:
++                options = {key: name for key, name in options.items()
++                           if key in managed or libraries.get(key, 'auto').strip().lower() in ('', 'auto')}
++                if not options:
++                    return
++                try:
++                    with progress.Progress(log=log.info) as reporter:
++                        directory = ffx.prepare(env, reporter.update)
++                except Exception as error:
++                    if env.get('WINE_FFX_PROVIDER'):
++                        raise
++                    log.warn(f'No verified OptiScaler FFX update available: {error}')
++                    changes = {('Libraries', key): 'auto' for key in managed}
++                else:
++                    changes = {('Libraries', key): r'\\?\unix' + str(directory / name).replace('/', '\\')
++                               for key, name in options.items()}
++            if not changes:
++                return
++            nightly.atomic_write(ini, nightly.update_ini(original, changes))
++    except Exception as error:
++        log.warn(f'Keeping OptiScaler FidelityFX libraries: {error}')
+ 
+ 
+ def setup_upscalers(
+@@ -700,18 +702,12 @@
+     """
+     dlss_version = get_version(env, 'PROTON_DLSS_UPGRADE', 'default')
+     xess_version = get_version(env, 'PROTON_XESS_UPGRADE', 'default')
+-
+-    ffx3_version = get_version(env, 'PROTON_FFX3_UPGRADE', '1.0.1.41314')
+-    ffx4_version = get_version(env, 'PROTON_FFX4_UPGRADE', 'default')
+ 
+     optiscaler_version = get_version(env, 'PROTON_USE_OPTISCALER', 'default')
+     upscaler_replace = set()
+     upscalers = (
+         ('dlss', dlss_version, 'dlss' in compat_config or 'optiscaler' in compat_config),
+         ('xess', xess_version, 'xess' in compat_config),
+-        # fidelityfx sdk
+-        ('ffx3', ffx3_version, 'ffx3' in compat_config),
+-        ('ffx4', ffx4_version, 'ffx4' in compat_config),
+     )
+     for upscaler in upscalers:
+         name, version, enabled = upscaler
+@@ -728,15 +724,13 @@
+                 installed_nightly = nightly.is_nightly(next(iter(records.values()))['version'])
+             except (KeyError, StopIteration, OSError, ValueError):
+                 pass
+-        # Follow the installed channel, including an offline fallback. Only
+-        # nightlies bundle these dependencies; explicit upgrades remain separate.
+-        for name, version in (('xess', xess_version), ('ffx3', ffx3_version)):
+-            if name in compat_config:
+-                continue
++        if 'xess' not in compat_config:
+             if installed_nightly:
+-                __prune_optiscaler_dependencies(name, compat_dir, prefix_dir)
+-            elif setup_upscaler(name, compat_dir, prefix_dir, version):
+-                upscaler_replace.add(name)
++                __prune_optiscaler_xess(compat_dir, prefix_dir)
++            elif setup_upscaler('xess', compat_dir, prefix_dir, xess_version):
++                upscaler_replace.add('xess')
++        if optiscaler_enabled:
++            __setup_optiscaler_ffx(env, compat_dir, prefix_dir, bundled=installed_nightly)
+         if optiscaler_enabled:
+             log.info('OptiScaler enabled.')
+             env['WINE_OPTISCALER_NAME'] = env.get('PROTON_OPTISCALER_NAME', 'dxgi.dll')
+@@ -755,12 +749,6 @@
+     if 'xess' in upscaler_replace:
+         pass
+ 
+-    if 'ffx3' in upscaler_replace:
+-        pass
+-
+-    if 'ffx4' in upscaler_replace:
+-        pass
+-
+     if upscaler_replace:
+         env['WINE_UPSCALER_REPLACE'] = ','.join(upscaler_replace)
+         log.debug(f'WINE_UPSCALER_REPLACE: {env["WINE_UPSCALER_REPLACE"]}.')

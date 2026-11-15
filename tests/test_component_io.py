@@ -209,6 +209,20 @@ class ComponentIO(unittest.TestCase):
             self.assertEqual((target / 'library').read_bytes(), b'old')
             self.assertFalse(list(self.root.glob('.prepare-*')))
 
+    def test_cleanup_runs_before_reusing_a_valid_component(self):
+        root = self.root / 'proton/components/dlss'
+        stage = root / '.prepare-abandoned'
+        stage.mkdir(parents=True)
+        (stage / 'archive').write_bytes(b'partial')
+        target = root / '1.0'
+        target.mkdir()
+        payload = b'valid'
+        (target / 'library.dll').write_bytes(payload)
+        manifest = {'version': '1.0', 'files': {'library.dll': {
+            'size': len(payload), 'sha256': hashlib.sha256(payload).hexdigest()}}}
+        with mock.patch.object(storage, 'download_file', side_effect=AssertionError('downloaded valid cache')):
+            self.assertEqual(storage.prepare_libraries({'XDG_DATA_HOME': str(self.root)}, 'dlss', manifest), target)
+        self.assertFalse(stage.exists())
 
 
 

@@ -2,7 +2,7 @@
 
 import platform
 
-from . import fsr, progress
+from . import ffx, fsr, progress
 
 
 _HELPERS = frozenset((
@@ -54,7 +54,7 @@ def setup(env, *, mode, command, gpu_query, log=print):
     enabled = env.get("PROTON_UPSCALER_UPGRADE") == "1"
     explicit_fsr = bool(env.get("WINE_FSR4_PROVIDER"))
     if not enabled and not any(env.get(key) for key in (
-            "WINE_FSR4_PROVIDER",)):
+            "WINE_FSR4_PROVIDER", "WINE_FFX_PROVIDER")):
         return False
     devices = None
     provider_ready = False
@@ -71,6 +71,9 @@ def setup(env, *, mode, command, gpu_query, log=print):
                                        progress=reporter.update, log=log)
         if provider_ready and not explicit_fsr and "WINE_FSR4_LITE" not in env and default_amd_lite(gpus()):
             env["WINE_FSR4_LITE"] = "1"
+        if (provider_ready and enabled) or env.get("WINE_FFX_PROVIDER"):
+            with progress.Progress(log=log) as reporter:
+                ffx.setup(env, progress=reporter.update, log=log)
         return provider_ready
     except Exception as error:
         log("Upscaler component setup failed; keeping the current game configuration: " + str(error))

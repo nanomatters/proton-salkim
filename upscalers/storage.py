@@ -88,6 +88,19 @@ def verified_files(directory, files):
         return False
 
 
+def directory_override(env, name):
+    value = env.get(name)
+    if not value:
+        return None
+    path = Path(value)
+    if not path.is_absolute() or not path.is_dir():
+        raise ComponentError(name + " must name an absolute component directory")
+    component = {"WINE_FFX_PROVIDER": "ffx", "WINE_DLSS_PROVIDER": "dlss", "WINE_XESS_PROVIDER": "xess"}.get(name)
+    if component:
+        protect_managed(env, component, path)
+    return path
+
+
 def cleanup_preparations(root):
     """Called under the component lock; recover interrupted publication first."""
     root = Path(root)
@@ -351,8 +364,41 @@ def _cached_fallback(root, requested, error, log, writable):
     return None
 
 
+def prepare_libraries(env, component, manifest, progress=None, *, log=print):
+    root = data_home(env) / "proton/components" / component
+    try:
+        return _prepare_libraries(root, manifest, progress)
+    except (ComponentError, OSError, ValueError) as error:
+        if directory := cached_fallback(root, manifest, error, log):
+            return directory
+        raise
 
 
+def _prepare_libraries(root, manifest, progress):
+    """Publish a complete verified DLL set; keep older releases for running games."""
+    target = root / manifest["version"]
+    with locked(root / ".lock"):
+        if target.is_symlink():
+            raise ComponentError("The component directory must not be a symlink")
+        if verified_files(target, manifest["files"]):
+            _remember(root, manifest)
+            return target.resolve()
+        with tempfile.TemporaryDirectory(prefix=".prepare-", dir=root) as directory:
+            stage = Path(directory) / "sdk"
+            stage.mkdir()
+            total = sum(item["size"] for item in manifest["files"].values())
+            completed = 0
+            for name, item in manifest["files"].items():
+                def update(stage, done, _total):
+                    return progress(stage, completed + done, total) if progress else None
+                download_file(item, stage / name, update, hosts=("raw.githubusercontent.com",))
+                completed += item["size"]
+            if not verified_files(stage, manifest["files"]):
+                raise ComponentError("Downloaded component failed verification")
+            atomic_json(stage / "metadata.json", manifest)
+            publish(stage, target)
+        _remember(root, manifest)
+        return target.resolve()
 
 
 def _metadata(release):

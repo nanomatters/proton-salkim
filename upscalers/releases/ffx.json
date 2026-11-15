@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "version": "1.1.4-2.4.0",
+  "sources": [
+    "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/releases/tag/v1.1.4",
+    "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/releases/tag/v2.4.0"
+  ],
+  "files": {
+    "amd_fidelityfx_dx12.dll": {
+      "url": "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/c6efa6bf7f2027b3ec94f28578bb5965eabb9e55/PrebuiltSignedDLL/amd_fidelityfx_dx12.dll",
+      "size": 6675664,
+      "sha256": "12a5081257ec95b0b53ad51b4a87fb3c03f97fe0bbb59f9496968f8d50ef93a6",
+      "file_version": "1.0.1.41314"
+    },
+    "amd_fidelityfx_vk.dll": {
+      "url": "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/c6efa6bf7f2027b3ec94f28578bb5965eabb9e55/PrebuiltSignedDLL/amd_fidelityfx_vk.dll",
+      "size": 9332432,
+      "sha256": "a1624cc4238fef046f30c4d80ce3f47be63fc5f5373f49e3ee9edb9960f54c78",
+      "file_version": "1.0.1.41314"
+    },
+    "amd_fidelityfx_denoiser_dx12.dll": {
+      "url": "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/7539ae8b6568ad29ed78a753404351daf3b5cca7/Kits/FidelityFX/signedbin/amd_fidelityfx_denoiser_dx12.dll",
+      "size": 8993552,
+      "sha256": "4ca5182d5c8a855441e0c82673716e4776f9afcfadfdb4225d2fc6113b0f853c",
+      "file_version": "1.2.1.4555"
+    },
+    "amd_fidelityfx_framegeneration_dx12.dll": {
+      "url": "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/7539ae8b6568ad29ed78a753404351daf3b5cca7/Kits/FidelityFX/signedbin/amd_fidelityfx_framegeneration_dx12.dll",
+      "size": 29679376,
+      "sha256": "e6843252f58b0341a0d80f6a20bc0d840643ee95bc48c22cac08745344577bb6",
+      "file_version": "4.0.2.4555"
+    },
+    "amd_fidelityfx_framegeneration_vk.dll": {
+      "url": "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/7539ae8b6568ad29ed78a753404351daf3b5cca7/Kits/FidelityFX/signedbin/amd_fidelityfx_framegeneration_vk.dll",
+      "size": 36806928,
+      "sha256": "d002dabff8c5e71eaa715fc99438cd4dc81230262a7897b16bc402efec3498b4",
+      "file_version": "4.0.2.4555"
+    },
+    "amd_fidelityfx_loader_dx12.dll": {
+      "url": "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/7539ae8b6568ad29ed78a753404351daf3b5cca7/Kits/FidelityFX/signedbin/amd_fidelityfx_loader_dx12.dll",
+      "size": 39184,
+      "sha256": "e2191d3c0828be45eb8affd4e3ec0378f2293adc345b772a7170edcf3b021ecb",
+      "file_version": "2.3.0.4555"
+    },
+    "amd_fidelityfx_loader_vk.dll": {
+      "url": "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/7539ae8b6568ad29ed78a753404351daf3b5cca7/Kits/FidelityFX/signedbin/amd_fidelityfx_loader_vk.dll",
+      "size": 39184,
+      "sha256": "38a56a01fb3565c0757d9f5c1e4e69de4b65e5f2e5769b323b200dc1f142bab9",
+      "file_version": "1.0.2.4555"
+    },
+    "amd_fidelityfx_radiancecache_dx12.dll": {
+      "url": "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/7539ae8b6568ad29ed78a753404351daf3b5cca7/Kits/FidelityFX/signedbin/amd_fidelityfx_radiancecache_dx12.dll",
+      "size": 800528,
+      "sha256": "c87394ebf928e681cd66bea3a3a90e9ce43d0b8682fc8a404ba4512b38d88f50",
+      "file_version": "0.9.0.4555"
+    },
+    "amd_fidelityfx_upscaler_dx12.dll": {
+      "url": "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/7539ae8b6568ad29ed78a753404351daf3b5cca7/Kits/FidelityFX/signedbin/amd_fidelityfx_upscaler_dx12.dll",
+      "size": 57664272,
+      "sha256": "aad4fccccb29084a655f9a4f9f613bd22c8c03fb4a0f8840148cc6543b4ccace",
+      "file_version": "4.1.2.4555"
+    },
+    "amd_fidelityfx_upscaler_vk.dll": {
+      "url": "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/7539ae8b6568ad29ed78a753404351daf3b5cca7/Kits/FidelityFX/signedbin/amd_fidelityfx_upscaler_vk.dll",
+      "size": 36135696,
+      "sha256": "4a7e895af6e0b615d40a84d59eb8c2b1054ad91cdd0c739567940270d51bdab7",
+      "file_version": "4.1.2.4555"
+    }
+  }
+}

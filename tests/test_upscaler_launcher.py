@@ -9,7 +9,7 @@ from unittest import mock
 
 from proton_config import Settings
 import upscalers
-from upscalers import fsr, storage
+from upscalers import ffx, fsr, storage
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +38,9 @@ class LauncherIntegration(unittest.TestCase):
         progress = mock.patch.object(upscalers.progress, "Progress")
         progress.start()
         self.addCleanup(progress.stop)
+        sdk = mock.patch.object(ffx, "setup", return_value=True)
+        self.sdk = sdk.start()
+        self.addCleanup(sdk.stop)
 
     def run_setup(self, mode='waitforexitandrun', command=None):
         return upscalers.setup(self.env,
@@ -74,6 +77,23 @@ class LauncherIntegration(unittest.TestCase):
         fixes = text.index('    protonfixes.execute()', legacy)
         self.assertLess(legacy, new)
         self.assertLess(new, fixes)
+
+    def test_sdk_follows_provider_readiness_and_preserves_explicit_path(self):
+        with mock.patch.object(fsr, "setup", return_value=True):
+            self.assertTrue(self.run_setup())
+        self.sdk.assert_called_once()
+        self.sdk.reset_mock()
+        with mock.patch.object(fsr, "setup", return_value=False):
+            self.assertFalse(self.run_setup())
+            self.sdk.assert_not_called()
+            self.env["WINE_FFX_PROVIDER"] = "/manual/sdk"
+            self.run_setup()
+            self.sdk.assert_called_once()
+
+    def test_sdk_failure_keeps_the_driver_provider(self):
+        with mock.patch.object(fsr, "setup", return_value=True):
+            self.sdk.return_value = False
+            self.assertTrue(self.run_setup())
 
     def test_gpu_eligibility_uses_vendor_and_capability(self):
         self.assertFalse(upscalers.eligible_amd([]))
@@ -215,6 +235,7 @@ class LauncherIntegration(unittest.TestCase):
                         self.env["PROTON_UPSCALER_UPGRADE"] = value
                     self.assertFalse(self.run_setup())
         setup.assert_not_called()
+        self.sdk.assert_not_called()
         self.query.assert_not_called()
 
     def test_explicit_provider_works_without_automatic_upgrades(self):
@@ -224,6 +245,7 @@ class LauncherIntegration(unittest.TestCase):
             self.assertTrue(self.run_setup())
         self.assertEqual(self.env["WINE_FSR4_PROVIDER"], "/manual/amd.dll")
         store.assert_not_called()
+        self.sdk.assert_not_called()
         self.query.assert_not_called()
 
     def test_upgrade_can_be_enabled_per_game(self):
@@ -278,7 +300,17 @@ class LauncherIntegration(unittest.TestCase):
 
     def test_component_entry_points_require_opt_in_but_accept_explicit_overrides(self):
         disabled = {}
-        self.assertFalse(fsr.setup(disabled, gpu_eligible=lambda: self.fail("GPU queried")))
+        directory = self.root / "manual provider"
+        directory.mkdir()
+        # prepare() is also used directly by OptiScaler.
+        for component, key in ((ffx, "WINE_FFX_PROVIDER"),):
+            with self.subTest(component=key), mock.patch.object(component, "prepare_libraries") as prepare:
+                with self.assertRaises(storage.ComponentError):
+                    component.prepare(disabled)
+                self.assertEqual(component.prepare({**disabled, key: str(directory)}), directory)
+                prepare.assert_not_called()
+        for setup in (fsr.setup,):
+            self.assertFalse(setup(disabled, gpu_eligible=lambda: self.fail("GPU queried")))
 
     def test_old_add_config_aliases_do_not_set_upgrade_flags(self):
         tree = ast.parse((ROOT / "utilities.py").read_text())

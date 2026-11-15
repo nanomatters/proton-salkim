@@ -234,11 +234,12 @@ How are AMD FSR upgrades managed?
 Upscaler upgrades are disabled by default. Set `PROTON_UPSCALER_UPGRADE=1`
 globally or per game to enable them.
 
-On compatible AMD GPUs, enabling this installs the FSR provider selected
-by the bundled manifest. A progress window appears during download and extraction;
-installed components are reused under `~/.local/share/proton/components/`.
+On compatible AMD GPUs, enabling this installs the FSR provider and FidelityFX SDK
+selected by the bundled manifests. A progress window appears during
+download and extraction; installed components are reused under `~/.local/share/proton/components/`.
 FSR providers live in `fsr/<driver-version>/`; existing caches are migrated when safe.
 The FSR download fetches only the required sections of AMD's driver package when the server supports partial downloads.
+Wine upgrades older compatible game SDKs and keeps newer or unrecognised ones.
 Downloads use disk space beside the component cache. Choose **Skip updates** to
 continue launching without further downloads. If an update fails, Proton reuses
 a complete verified cached release when available.
