@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "version": "3.0.2",
+  "source": "https://github.com/intel/xess/releases/tag/v3.0.2",
+  "files": {
+    "libxess.dll": {
+      "url": "https://raw.githubusercontent.com/intel/xess/8fe81bdbbaf00b3c1b733fd0d830c333dc84e6f0/bin/libxess.dll",
+      "size": 77795704,
+      "sha256": "251659dd84a3e84de67c886a4186e01f3eca49b00641906fe38bb6b807e5d5b7",
+      "file_version": "2.0.2.68"
+    },
+    "libxess_dx11.dll": {
+      "url": "https://raw.githubusercontent.com/intel/xess/8fe81bdbbaf00b3c1b733fd0d830c333dc84e6f0/bin/libxess_dx11.dll",
+      "size": 156016,
+      "sha256": "c7cfe86f0c9d94e4fb3696d3cd5035e2bbb6a8b1b0572f8b7395a4cdfd0c625e",
+      "file_version": "2.0.2.68"
+    },
+    "libxess_fg.dll": {
+      "url": "https://raw.githubusercontent.com/intel/xess/8fe81bdbbaf00b3c1b733fd0d830c333dc84e6f0/bin/libxess_fg.dll",
+      "size": 22957432,
+      "sha256": "ec5e0c65e075570c6ede72618bb666d0be0c2e10b2ea9762c0fe8cb8e375ab27",
+      "file_version": "1.3.1.78"
+    },
+    "libxell.dll": {
+      "url": "https://raw.githubusercontent.com/intel/xess/8fe81bdbbaf00b3c1b733fd0d830c333dc84e6f0/bin/libxell.dll",
+      "size": 415368,
+      "sha256": "d2030dcd694fda8f2ec7e044b13e6db8f0b56d4ba9113a5efad334e3f3ded8c7",
+      "file_version": "1.3.2.10"
+    }
+  }
+}

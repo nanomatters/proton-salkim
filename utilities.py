@@ -59,7 +59,6 @@ log = Log()
 
 _config_envvars = {
     'wow64': 'PROTON_USE_WOW64',
-    'xess': 'PROTON_XESS_UPGRADE',
     'optiscaler': 'PROTON_USE_OPTISCALER',
 }
 
@@ -98,7 +97,7 @@ def log_environment(env: dict, log_file: io.TextIOWrapper):
         'PROTON_DISCORD_BRIDGE',
         'PROTON_UPSCALER_UPGRADE',
         'WINE_DLSS_PROVIDER',
-        'PROTON_XESS_UPGRADE',
+        'WINE_XESS_PROVIDER',
         'WINE_FSR4_PROVIDER',
         'WINE_FFX_PROVIDER',
         'PROTON_MLFG_UPGRADE',

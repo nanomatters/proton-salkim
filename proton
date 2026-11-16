@@ -2604,7 +2604,6 @@ if __name__ == "__main__":
     g_session.check_environment("PROTON_LOCAL_SHADER_CACHE", "localshadercache")
     protonfixes.setup_local_shader_cache(g_session.compat_config, g_session.env)
     g_session.check_environment("PROTON_MLFG_UPGRADE", "mlfg")
-    g_session.check_environment("PROTON_XESS_UPGRADE", "xess")
     g_session.check_environment("PROTON_USE_OPTISCALER", "optiscaler")
     protonfixes.setup_upscalers(g_session.compat_config, g_session.env, g_compatdata.base_dir, g_compatdata.prefix_dir)
     upscalers.setup(g_session.env,

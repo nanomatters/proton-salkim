@@ -9,15 +9,16 @@ from unittest import mock
 
 from proton_config import Settings
 import upscalers
-from upscalers import dlss, ffx, fsr, storage
+from upscalers import dlss, ffx, fsr, storage, xess
 
 
 ROOT = Path(__file__).resolve().parents[1]
 dlss_setup = dlss.setup
+xess_setup = xess.setup
 
 
-def gpu(vendor, *extensions, kind="DISCRETE_GPU"):
-    return SimpleNamespace(vendorID=vendor, deviceType=SimpleNamespace(name=kind), extensions=[
+def gpu(vendor, *extensions, kind="DISCRETE_GPU", features=()):
+    return SimpleNamespace(vendorID=vendor, deviceType=SimpleNamespace(name=kind), features=set(features), extensions=[
         SimpleNamespace(extensionName=name) for name in extensions])
 
 
@@ -45,6 +46,9 @@ class LauncherIntegration(unittest.TestCase):
         nvidia = mock.patch.object(dlss, "setup", return_value=False)
         self.dlss = nvidia.start()
         self.addCleanup(nvidia.stop)
+        intel = mock.patch.object(xess, "setup", return_value=False)
+        self.xess = intel.start()
+        self.addCleanup(intel.stop)
 
     def run_setup(self, mode='waitforexitandrun', command=None):
         return upscalers.setup(self.env,
@@ -218,6 +222,48 @@ class LauncherIntegration(unittest.TestCase):
             self.assertTrue(self.run_setup())
         self.assertNotIn('WINE_DLSS_PROVIDER', self.env)
 
+    def test_xess_eligibility_is_cross_vendor_and_requires_integer_dot_product(self):
+        for vendor in (0x8086, 0x1002, 0x10de):
+            with self.subTest(vendor=vendor):
+                self.assertTrue(upscalers.eligible_xess([gpu(vendor, features={'shaderIntegerDotProduct'})]))
+                self.assertTrue(upscalers.eligible_xess([gpu(vendor, 'VK_KHR_shader_integer_dot_product')]))
+                self.assertFalse(upscalers.eligible_xess([gpu(vendor)]))
+        for kind in ('CPU', 'OTHER', 'VIRTUAL_GPU', ''):
+            self.assertFalse(upscalers.eligible_xess([
+                gpu(0x8086, 'VK_KHR_shader_integer_dot_product', kind=kind)]))
+        self.assertTrue(upscalers.eligible_xess([
+            gpu(0x8086, features={'shaderIntegerDotProduct'}, kind='INTEGRATED_GPU')]))
+
+    def test_xess_download_is_automatic_and_shares_the_vulkan_query(self):
+        self.query.return_value = iter([gpu(0x8086, features={'shaderIntegerDotProduct'})])
+        self.xess.side_effect = lambda env, **options: xess_setup(env, **options)
+        directory = self.root / 'shared XeSS'
+        directory.mkdir()
+        with mock.patch.object(xess, 'prepare', return_value=directory), mock.patch.object(fsr, 'Store') as store:
+            self.assertTrue(self.run_setup())
+        self.assertEqual(self.env['WINE_XESS_PROVIDER'], str(directory))
+        self.query.assert_called_once()
+        store.assert_not_called()
+        self.assertFalse(self.prefix.exists())
+
+    def test_manual_xess_directory_bypasses_device_requirements(self):
+        directory = self.root / 'manual XeSS'
+        directory.mkdir()
+        self.env['WINE_XESS_PROVIDER'] = str(directory)
+        self.xess.side_effect = lambda env, **options: xess_setup(env, **options)
+        with mock.patch.object(fsr, 'setup', return_value=False):
+            self.assertTrue(self.run_setup())
+        self.query.assert_not_called()
+        self.assertEqual(self.env['WINE_XESS_PROVIDER'], str(directory))
+
+    def test_failed_xess_download_preserves_the_dlss_provider(self):
+        self.query.return_value = [gpu(0x10de, features={'shaderIntegerDotProduct'})]
+        self.dlss.return_value = True
+        self.xess.side_effect = lambda env, **options: xess_setup(env, **options)
+        with mock.patch.object(xess, 'prepare', side_effect=OSError('offline')):
+            self.assertTrue(self.run_setup())
+        self.assertNotIn('WINE_XESS_PROVIDER', self.env)
+
     def test_custom_provider_and_lite_bypass_hardware_detection(self):
         self.env.update(WINE_FSR4_PROVIDER="/custom/amdxcffx64.dll", WINE_FSR4_LITE="1")
         self.query.side_effect = AssertionError("GPU queried")
@@ -279,6 +325,7 @@ class LauncherIntegration(unittest.TestCase):
         setup.assert_not_called()
         self.sdk.assert_not_called()
         self.dlss.assert_not_called()
+        self.xess.assert_not_called()
         self.query.assert_not_called()
 
     def test_explicit_provider_works_without_automatic_upgrades(self):
@@ -346,13 +393,14 @@ class LauncherIntegration(unittest.TestCase):
         directory = self.root / "manual provider"
         directory.mkdir()
         # prepare() is also used directly by OptiScaler.
-        for component, key in ((dlss, "WINE_DLSS_PROVIDER"), (ffx, "WINE_FFX_PROVIDER"),):
+        for component, key in ((dlss, "WINE_DLSS_PROVIDER"), (xess, "WINE_XESS_PROVIDER"),
+                               (ffx, "WINE_FFX_PROVIDER")):
             with self.subTest(component=key), mock.patch.object(component, "prepare_libraries") as prepare:
                 with self.assertRaises(storage.ComponentError):
                     component.prepare(disabled)
                 self.assertEqual(component.prepare({**disabled, key: str(directory)}), directory)
                 prepare.assert_not_called()
-        for setup in (fsr.setup, dlss_setup):
+        for setup in (fsr.setup, dlss_setup, xess_setup):
             self.assertFalse(setup(disabled, gpu_eligible=lambda: self.fail("GPU queried")))
 
     def test_old_add_config_aliases_do_not_set_upgrade_flags(self):
@@ -361,13 +409,14 @@ class LauncherIntegration(unittest.TestCase):
                  isinstance(node, ast.FunctionDef) and node.name == "proton_add_config" or
                  isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and
                  target.id == "_config_envvars" for target in node.targets)]
-        env = {"PROTON_ADD_CONFIG": "fsr3,fsr4=4.1.2,dlss"}
+        env = {"PROTON_ADD_CONFIG": "fsr3,fsr4=4.1.2,dlss,xess"}
         namespace = {"os": SimpleNamespace(environ=env)}
         exec(compile(ast.Module(body=nodes, type_ignores=[]), "utilities", "exec"), namespace)
         namespace["proton_add_config"]()
         self.assertNotIn("PROTON_FSR4_UPGRADE", env)
         self.assertNotIn("FSR4_UPGRADE", env)
         self.assertNotIn("PROTON_DLSS_UPGRADE", env)
+        self.assertNotIn("PROTON_XESS_UPGRADE", env)
 
 
 if __name__ == "__main__":

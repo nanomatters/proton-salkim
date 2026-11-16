@@ -1,0 +1,638 @@
+From: Erhan Bilgili <erhan.bilgili@gmail.com>
+Subject: [PATCH] upscalers: Use the shared XeSS runtime.
+
+---
+--- a/tests/test_optiscaler.py
++++ b/tests/test_optiscaler.py
+@@ -30,6 +30,8 @@
+ streamline_setup = upscalers.streamline.setup
+ optiscaler_ffx_setup = upscalers.__setup_optiscaler_ffx
+ optiscaler_dlss_setup = upscalers.__setup_optiscaler_dlss
++optiscaler_xess_setup = upscalers.__setup_optiscaler_xess
++prune_xess = upscalers.__prune_optiscaler_xess
+ 
+ INI = (b'; Header\n[Libraries]\n; Library location\nOptiDllPath=auto\n'
+        b'[Hotfix]\nCheckForUpdate=auto\n[ProcessFilter]\nProcessExclusionList=auto\n')
+@@ -66,6 +68,11 @@
+         dlss = mock.patch.object(upscalers, '__setup_optiscaler_dlss')
+         self.dlss_setup = dlss.start()
+         self.addCleanup(dlss.stop)
++        xess = mock.patch.object(upscalers, '__setup_optiscaler_xess')
++        self.xess_setup = xess.start()
++        self.xess_setup.side_effect = lambda env, compat, prefix, *, bundled=False: (
++            prune_xess(compat, prefix) if bundled else None)
++        self.addCleanup(xess.stop)
+ 
+     def package(self, item, cache, stage):
+         files = {'OptiScaler.dll': b'new DLL', 'OptiScaler.ini': INI,
+@@ -136,7 +143,7 @@
+     def run_upscalers(self, config=(), env=None, *, optiscaler_enabled=True):
+         env = {'PROTON_USE_OPTISCALER': 'nightly', **(env or {})}
+         # Exercise policy/cleanup without the independent downloaders or Wine.
+-        with mock.patch.object(upscalers, 'setup_upscaler', return_value=True) as setup, \
++        with mock.patch.object(upscalers, 'setup_upscaler', return_value=True, create=True) as setup, \
+                 mock.patch.object(upscalers, 'setup_optiscaler', return_value=optiscaler_enabled):
+             upscalers.setup_upscalers(set(config) | {'optiscaler'}, env, self.compat, self.prefix)
+         return env, [(call.args[0], call.args[3]) for call in setup.call_args_list]
+@@ -149,7 +156,7 @@
+         self.assertEqual(env['WINE_OPTISCALER_NAME'], 'dxgi.dll')
+         self.assertNotIn('WINE_UPSCALER_REPLACE', env)
+ 
+-    def test_explicit_upgrades_keep_their_versions_and_files(self):
++    def test_legacy_upgrades_do_not_override_bundled_nightly_libraries(self):
+         self.bundled_dependencies()
+         files = {'libxess.dll': b'explicit xess'}
+         self.dependency_files('xess_files', files)
+@@ -158,12 +165,12 @@
+             'PROTON_XESS_UPGRADE': 'test-xess', 'PROTON_FFX3_UPGRADE': 'test-ffx3',
+             'PROTON_FFX4_UPGRADE': 'test-ffx4',
+         })
+-        for item in [('xess', 'test-xess')]:
+-            self.assertIn(item, calls)
+-        self.assertEqual((self.destination / 'libxess.dll').read_bytes(), files['libxess.dll'])
++        self.assertEqual(calls, [])
++        self.assertFalse((self.destination / 'libxess.dll').exists())
++        self.assertEqual((self.destination / 'OptiScaler/libxess.dll').read_bytes(), b'private XeSS')
+         self.assertTrue((self.destination / 'amd_fidelityfx_vk.dll').exists())
+ 
+-    def test_stable_fallback_still_downloads_standalone_dependencies(self):
++    def test_stable_fallback_uses_shared_dependencies(self):
+         self.bundled_dependencies()
+         tracking = self.compat / 'upscaler_files'
+         records = json.loads(tracking.read_text())
+@@ -171,7 +178,7 @@
+             record['version'] = '0.9.0'
+         tracking.write_text(json.dumps(records))
+         _, calls = self.run_upscalers()
+-        self.assertIn(('xess', 'default'), calls)
++        self.assertEqual(calls, [])
+         self.assertNotIn('ffx3', [name for name, _ in calls])
+ 
+     def test_nightly_fallback_to_stable_request_still_uses_bundled_dependencies(self):
+@@ -180,14 +187,14 @@
+         self.assertNotIn('xess', [name for name, _ in calls])
+         self.assertNotIn('ffx3', [name for name, _ in calls])
+ 
+-    def test_failed_optiscaler_preserves_standalone_fallback(self):
++    def test_failed_optiscaler_preserves_previous_files_without_overrides(self):
+         self.bundled_dependencies()
+         self.dependency_files('xess_files', {'libxess.dll': b'keep'})
+         env, calls = self.run_upscalers(optiscaler_enabled=False)
+-        self.assertIn(('xess', 'default'), calls)
++        self.assertEqual(calls, [])
+         self.sdk_setup.assert_not_called()
+         self.dlss_setup.assert_not_called()
+-        self.assertEqual(set(env['WINE_UPSCALER_REPLACE'].split(',')), {'xess'})
++        self.assertNotIn('WINE_UPSCALER_REPLACE', env)
+         self.assertNotIn('WINE_OPTISCALER_NAME', env)
+         self.assertTrue((self.destination / 'libxess.dll').exists())
+ 
+@@ -282,7 +289,7 @@
+         self.dependency_files('xess_files', {'libxess.dll': b'old'})
+         env = {'PROTON_USE_OPTISCALER': 'nightly'}
+         with mock.patch.object(nightly, 'resolve', side_effect=OSError('offline')), \
+-                mock.patch.object(upscalers, 'setup_upscaler', return_value=True) as setup:
++                mock.patch.object(upscalers, 'setup_upscaler', return_value=True, create=True) as setup:
+             upscalers.setup_upscalers({'optiscaler'}, env, self.compat, self.prefix)
+         self.assertEqual([call.args[0] for call in setup.call_args_list], [])
+         self.assertEqual(env['WINE_OPTISCALER_NAME'], 'dxgi.dll')
+@@ -297,26 +304,27 @@
+         self.dependency_files('xess_files', {'libxess.dll': b'keep stable dependency'})
+         env = {'PROTON_USE_OPTISCALER': 'nightly'}
+         with mock.patch.object(nightly, 'resolve', side_effect=OSError('offline')), \
+-                mock.patch.object(upscalers, 'setup_upscaler', return_value=True) as setup:
++                mock.patch.object(upscalers, 'setup_upscaler', return_value=True, create=True) as setup:
+             upscalers.setup_upscalers({'optiscaler'}, env, self.compat, self.prefix)
+-        self.assertEqual([call.args[0] for call in setup.call_args_list], ['xess'])
++        self.assertEqual(setup.call_args_list, [])
+         self.assertEqual(env['WINE_OPTISCALER_NAME'], 'dxgi.dll')
+         self.assertEqual((self.destination / 'libxess.dll').read_bytes(), b'keep stable dependency')
+ 
+-    def test_standalone_upscalers_are_unchanged_without_optiscaler(self):
++    def test_legacy_upscaler_flags_no_longer_download_or_redirect(self):
+         env = {'PROTON_XESS_UPGRADE': 'custom'}
+-        with mock.patch.object(upscalers, 'setup_upscaler', return_value=True) as setup, \
++        with mock.patch.object(upscalers, 'setup_upscaler', return_value=True, create=True) as setup, \
+                 mock.patch.object(upscalers, 'setup_optiscaler') as opti:
+             upscalers.setup_upscalers({'xess'}, env, self.compat, self.prefix)
+-        self.assertEqual([call.args[0] for call in setup.call_args_list], ['xess'])
+-        self.assertEqual(set(env['WINE_UPSCALER_REPLACE'].split(',')), {'xess'})
++        self.assertEqual(setup.call_args_list, [])
++        self.assertNotIn('WINE_UPSCALER_REPLACE', env)
+         opti.assert_not_called()
+ 
+     def component_upgrades(self):
+-        from upscalers import ffx, dlss
++        from upscalers import dlss, ffx, xess
+         return (
+             ('ffx', ffx, optiscaler_ffx_setup, 'FfxDx12Path', 'FfxVkPath', 'amd_fidelityfx_dx12.dll'),
+             ('dlss', dlss, optiscaler_dlss_setup, 'NvngxDlssPath', 'NvngxFeaturePath', None),
++            ('xess', xess, optiscaler_xess_setup, 'XeSSPath', 'XeLLPath', 'libxess.dll'),
+         )
+ 
+     def test_failed_automatic_component_upgrade_resets_managed_paths(self):
+@@ -441,6 +449,81 @@
+                     path = manual / filename if filename else manual
+                     self.assertIn(key + '=' + r'\\?\unix' + str(path).replace('/', '\\'), ini.read_text())
+ 
++    def test_disabled_upgrades_keep_optiscaler_enabled(self):
++        env = {'PROTON_UPSCALER_UPGRADE': '0'}
++        with mock.patch.object(upscalers, 'setup_optiscaler', return_value=True):
++            upscalers.setup_upscalers({'optiscaler'}, env, self.compat, self.prefix)
++        self.assertEqual(env['WINE_OPTISCALER_NAME'], 'dxgi.dll')
++        self.sdk_setup.assert_called_once()
++        self.dlss_setup.assert_called_once()
++        self.xess_setup.assert_called_once()
++
++    def test_stable_xess_uses_one_shared_directory_without_prefix_copies(self):
++        from upscalers import xess, progress
++        shared = self.root / 'shared XeSS'
++        shared.mkdir()
++        ini = self.destination / 'OptiScaler.ini'
++        ini.write_text('[Libraries]\n; keep comment\nXeSSPath=auto\n')
++        with mock.patch.object(xess, 'prepare', return_value=shared) as prepare, \
++                mock.patch.object(progress, 'Progress'):
++            optiscaler_xess_setup({'PROTON_UPSCALER_UPGRADE': '1'}, self.compat, self.prefix)
++        text = ini.read_text()
++        for key, name in {'XeSSPath': 'libxess.dll', 'XeSSDx11Path': 'libxess_dx11.dll',
++                          'XeFGPath': 'libxess_fg.dll', 'XeLLPath': 'libxell.dll'}.items():
++            self.assertIn(key + '=' + r'\\?\unix' + str(shared / name).replace('/', '\\'), text)
++        self.assertIn('; keep comment', text)
++        self.assertFalse(list(self.destination.glob('libxe*.dll')))
++        prepare.assert_called_once()
++
++    def test_stable_xess_keeps_custom_paths_as_a_set(self):
++        from upscalers import xess
++        ini = self.destination / 'OptiScaler.ini'
++        for key in ('XeSSPath', 'XeSSDx11Path', 'XeFGPath', 'XeLLPath'):
++            original = '[Libraries]\n' + key + '=C:\\custom\\library.dll\n'
++            ini.write_text(original)
++            with mock.patch.object(xess, 'prepare') as prepare:
++                optiscaler_xess_setup({'PROTON_UPSCALER_UPGRADE': '1'}, self.compat, self.prefix)
++            prepare.assert_not_called()
++            self.assertEqual(ini.read_text(), original)
++
++    def test_stable_xess_updates_managed_paths_and_preserves_old_release(self):
++        from upscalers import xess, progress
++        old = self.root / 'proton/components/xess/old'
++        new = self.root / 'proton/components/xess/new'
++        old.mkdir(parents=True)
++        ini = self.destination / 'OptiScaler.ini'
++        ini.write_text('[Libraries]\nXeSSPath=' + r'\\?\unix' + str(old / 'libxess.dll').replace('/', '\\') + '\n')
++        with mock.patch.object(xess, 'prepare', return_value=new), mock.patch.object(progress, 'Progress'):
++            optiscaler_xess_setup({'XDG_DATA_HOME': str(self.root), 'PROTON_UPSCALER_UPGRADE': '1'}, self.compat, self.prefix)
++        self.assertIn(r'\xess\new\libxess.dll', ini.read_text())
++        self.assertNotIn(r'\xess\old\libxess.dll', ini.read_text())
++        self.assertTrue(old.is_dir())
++
++    def test_nightly_restores_managed_xess_paths_to_bundled_without_download(self):
++        from upscalers import xess
++        self.bundled_dependencies()
++        old = self.root / 'proton/components/xess/old'
++        ini = self.destination / 'OptiScaler.ini'
++        ini.write_bytes(nightly.update_ini(ini.read_bytes(), {
++            ('Libraries', 'XeSSPath'): r'\\?\unix' + str(old / 'libxess.dll').replace('/', '\\'),
++            ('Libraries', 'XeLLPath'): r'C:\custom\libxell.dll',
++        }))
++        with mock.patch.object(xess, 'prepare') as prepare:
++            optiscaler_xess_setup({'XDG_DATA_HOME': str(self.root), 'PROTON_UPSCALER_UPGRADE': '1'}, self.compat, self.prefix, bundled=True)
++        self.assertIn('XeSSPath=auto', ini.read_text())
++        self.assertIn(r'XeLLPath=C:\custom\libxell.dll', ini.read_text())
++        prepare.assert_not_called()
++        self.assertEqual((self.destination / 'OptiScaler/libxess.dll').read_bytes(), b'private XeSS')
++
++    def test_xess_failure_preserves_previous_configuration(self):
++        from upscalers import xess, progress
++        ini = self.destination / 'OptiScaler.ini'
++        ini.write_bytes(INI)
++        with mock.patch.object(xess, 'prepare', side_effect=OSError('offline')), \
++                mock.patch.object(progress, 'Progress'):
++            optiscaler_xess_setup({'PROTON_UPSCALER_UPGRADE': '1'}, self.compat, self.prefix)
++        self.assertEqual(ini.read_bytes(), INI)
++
+     def test_stable_ffx_uses_shared_files_and_preserves_custom_choices(self):
+         from upscalers import ffx, progress
+         shared = self.root / 'shared SDK'
+@@ -492,7 +575,7 @@
+     def test_no_legacy_ffx_controls_remain_active(self):
+         for config in ({'ffx3'}, {'ffx4'}, {'ffx3', 'ffx4'}):
+             env = {'PROTON_FFX3_UPGRADE': '1', 'PROTON_FFX4_UPGRADE': '1'}
+-            with mock.patch.object(upscalers, 'setup_upscaler') as setup:
++            with mock.patch.object(upscalers, 'setup_upscaler', create=True) as setup:
+                 upscalers.setup_upscalers(config, env, self.compat, self.prefix)
+             setup.assert_not_called()
+             self.assertNotIn('WINE_UPSCALER_REPLACE', env)
+@@ -615,7 +698,7 @@
+ 
+     def test_legacy_dlss_controls_no_longer_download_or_force_presets(self):
+         env = {'PROTON_DLSS_UPGRADE': '310.9.16', 'DXVK_NVAPI_DRS_SETTINGS': 'user=123'}
+-        with mock.patch.object(upscalers, 'setup_upscaler') as setup:
++        with mock.patch.object(upscalers, 'setup_upscaler', create=True) as setup:
+             upscalers.setup_upscalers({'dlss'}, env, self.compat, self.prefix)
+         setup.assert_not_called()
+         self.assertEqual(env, {'PROTON_DLSS_UPGRADE': '310.9.16', 'DXVK_NVAPI_DRS_SETTINGS': 'user=123'})
+@@ -639,7 +722,7 @@
+             with self.subTest(config=config):
+                 env = {'PROTON_FSR4_UPGRADE': '26.10.2'}
+                 before = dict(env)
+-                with mock.patch.object(upscalers, 'setup_upscaler') as setup:
++                with mock.patch.object(upscalers, 'setup_upscaler', create=True) as setup:
+                     upscalers.setup_upscalers(config, env, self.compat, self.prefix)
+                 setup.assert_not_called()
+                 self.assertEqual(env, before)
+@@ -656,7 +739,7 @@
+ 
+     def test_provider_setup_does_not_overwrite_direct_wine_overrides(self):
+         env = {'FSR4_UPGRADE': '0', 'MLFG_UPGRADE': '0'}
+-        with mock.patch.object(upscalers, 'setup_upscaler') as setup:
++        with mock.patch.object(upscalers, 'setup_upscaler', create=True) as setup:
+             upscalers.setup_upscalers(set(), env, self.compat, self.prefix)
+         setup.assert_not_called()
+         self.assertEqual(env, {'FSR4_UPGRADE': '0', 'MLFG_UPGRADE': '0'})
+--- a/upscalers.py
++++ b/upscalers.py
+@@ -4,14 +4,12 @@
+ import fcntl
+ import hashlib
+ import json
+-import lzma
+ import ntpath
+ import os
+ import tempfile
+ import urllib.request
+-import zipfile
+ from pathlib import Path
+-from typing import Callable, Union
++from typing import Union
+ from urllib.parse import unquote, urlparse
+ 
+ from .logger import log
+@@ -68,41 +66,12 @@
+     return dlls[-1]
+ 
+ 
+-__xess_section = 'xess_files'
+ __opti_section = 'opti_files'
+ __version_file = 'upscaler_files'
+ 
+ 
+ def __get_opti_files(version: str = 'default') -> tuple[str, dict]:
+     return 'drive_c/windows/system32/umu/', __get_dll_manifest('optiscaler', version)
+-
+-
+-def __get_xess_dlls(version: str = 'default') -> dict:
+-    return {
+-        'drive_c/windows/system32/umu/libxess.dll': __get_dll_manifest('xess', version),
+-        'drive_c/windows/system32/umu/libxess_dx11.dll': __get_dll_manifest(
+-            'xess_dx11', version
+-        ),
+-        'drive_c/windows/system32/umu/libxell.dll': __get_dll_manifest('xell', version),
+-        'drive_c/windows/system32/umu/libxess_fg.dll': __get_dll_manifest(
+-            'xess_fg', version
+-        ),
+-    }
+-
+-
+-def __get_upscaler_items(name: str, version: str) -> tuple[dict, Callable, str]:
+-    upscalers = {
+-        'xess': (__get_xess_dlls, __download_extract_zip, __xess_section),
+-    }
+-    get_items, dlfunc, section = upscalers[name]
+-    try:
+-        items = get_items(version)
+-    except Exception as e:
+-        log.crit(f'Failed to get "{name}" versions from manifest')
+-        log.crit(str(e))
+-        raise e
+-
+-    return items, dlfunc, section
+ 
+ 
+ def __get_tracked_items(compat_dir: str, section: str) -> dict:
+@@ -132,97 +101,6 @@
+     local_versions[section] = checksums
+ 
+     nightly.atomic_write(tracking_file, json.dumps(local_versions).encode('utf-8'))
+-
+-
+-def __check_upscaler_file(
+-    prefix_dir: str, dst: str, remote_item: dict, tracked_item: dict, ignore_version: bool
+-) -> bool:
+-    target = os.path.join(prefix_dir, dst)
+-
+-    # Before everything, check if target is a symlink
+-    # or the file size is unreasonably small and remove it
+-    if os.path.islink(target):
+-        log.debug(f'Removing stale symlink "{dst}"')
+-        os.unlink(target)
+-    if os.path.exists(target) and os.stat(target).st_size < 1024:
+-        log.debug(f'Removing stale file "{dst}"')
+-        os.unlink(target)
+-
+-    # First check if the file exists
+-    if not os.path.exists(target):
+-        log.warn(f'Missing file from prefix "{dst}"')
+-        return False
+-
+-    with open(target, 'rb') as dst_fd:
+-        dst_md5 = hashlib.md5(dst_fd.read()).hexdigest().lower()
+-
+-    # Then check if the file matches the one recorded in the tracking file
+-    tracked_md5 = tracked_item['md5_hash']
+-    if tracked_md5 and dst_md5 != tracked_md5.lower():
+-        log.warn(f'MD5 checksum mismatch between tracking file and prefix "{dst}"')
+-        return False
+-
+-    # If we don't want to ignore the update
+-    # We ignore updates in the validation check after the downloads
+-    if not ignore_version:
+-        if tracked_item['version'] != remote_item['version']:
+-            log.warn(f'Version mismatch between tracking file and prefix "{dst}"')
+-            return False
+-        item_md5 = remote_item.get('md5_hash', '')
+-        if item_md5 and dst_md5 != item_md5.lower():
+-            log.warn(f'MD5 checksum mismatch between manifest and prefix "{dst}"')
+-            return False
+-        log.debug(f'Found matching file in prefix "{dst}"')
+-
+-    return True
+-
+-
+-def __check_upscaler_files(
+-    compat_dir: str, prefix_dir: str, remote_items: dict, section: str, ignore_version: bool
+-) -> bool:
+-    try:
+-        tracked_items = __get_tracked_items(compat_dir, section)
+-        # test if new files and their attributes exist in the tracking file
+-        for dst in remote_items.keys():
+-            _ = tracked_items[dst].get('md5_hash')
+-    except Exception as e:
+-        log.warn(str(e))
+-        return False
+-
+-    valid_files = tuple(
+-        __check_upscaler_file(prefix_dir, dst, remote_items[dst], tracked_items[dst], ignore_version)
+-        for dst in remote_items.keys()
+-    )
+-
+-    return all(valid_files)
+-
+-
+-def check_upscaler(
+-    name: str,
+-    compat_dir: str,
+-    prefix_dir: str,
+-    version: str = 'default',
+-    *,
+-    ignore_version: bool = False,
+-) -> bool:
+-    """Check for upscaler files and their versions
+-
+-    name: the name of the upscaler, possible values xess
+-    version: the version of the upscaler dll to download
+-    ignore_version: ignore version mismatch but still check if the dlls are present
+-    """
+-    try:
+-        items, _, section = __get_upscaler_items(name, version)
+-    except Exception:
+-        return False
+-
+-    return __check_upscaler_files(
+-        compat_dir,
+-        prefix_dir,
+-        items,
+-        section,
+-        ignore_version,
+-    )
+ 
+ 
+ def check_optiscaler(
+@@ -272,48 +150,6 @@
+                for name, checksum in item['md5_hash'].items())
+ 
+ 
+-def __download_upscaler_files(
+-    compat_dir: str,
+-    prefix_dir: str,
+-    items: dict,
+-    dlfunc: Callable[[dict, Path, Path], None],
+-    section: str,
+-) -> bool:
+-    """Download and install the required dlls.
+-
+-    This function takes care of backing up, downloading, and installing the required dlls
+-    If the download fails, it will uses the backups to revert to the previous files, otherwise
+-    the backups are removed.
+-
+-    The downloading, caching and installation of the dlls is facilitated in the callable passed through
+-    the `dlfunc` argument.
+-    """
+-    cache_dir = config.path.cache_dir.joinpath('upscalers')
+-    version = {}
+-    for dst in items.keys():
+-        log.info(f'Downloading upscaler file "{os.path.basename(dst)}"')
+-        file = Path(prefix_dir, dst)
+-        temp = Path(prefix_dir, dst + '.old')
+-        try:
+-            if file.exists() or file.is_symlink():
+-                file.rename(temp)
+-            dlfunc(items[dst], cache_dir, file)
+-            temp.unlink(missing_ok=True)
+-        except Exception as e:
+-            log.crit(f'Error while downloading file "{file.name}"')
+-            log.crit(str(e))
+-            file.unlink(missing_ok=True)
+-            if temp.exists() or temp.is_symlink():
+-                temp.rename(file)
+-            return False
+-        version[dst] = {
+-            'version': items[dst]['version'],
+-            'md5_hash': items[dst]['md5_hash'],
+-        }
+-    __set_tracked_items(compat_dir, section, version)
+-    return True
+-
+-
+ def __download_file(url: str, dst: Path, *, checksum: Union[str, None] = None) -> None:
+     """Downloads a file and checks against a checksum.
+ 
+@@ -354,48 +190,6 @@
+ 
+     if not cached_file.exists():
+         __download_file(item['download_url'], cached_file, checksum=item_md5)
+-
+-
+-def __download_extract_zip(item: dict, cache: Path, dst: Path) -> None:
+-    url_path = Path(unquote(urlparse(item['download_url']).path))
+-    cached_file = cache.joinpath(url_path.name)
+-    __cached_download(item, cached_file)
+-    dst.parent.mkdir(parents=True, exist_ok=True)
+-    if cached_file.suffix == '.zip':
+-        with zipfile.ZipFile(cached_file) as zip_fd:
+-            zip_fd.extractall(dst.parent)
+-    if cached_file.suffix == '.xz':
+-        with dst.open('wb') as dst_fd:
+-            # this also sets the target filename
+-            with cached_file.open('rb') as cached_fd:
+-                dst_fd.write(lzma.decompress(cached_fd.read()))
+-
+-
+-def download_upscaler(
+-    name: str, compat_dir: str, prefix_dir: str, version: str = 'default'
+-) -> None:
+-    """Check for upscaler files and their versions
+-
+-    name: the name of the upscaler, possible values xess
+-    version: the version of the upscaler dll to download
+-    """
+-    if check_upscaler(name, compat_dir, prefix_dir, version, ignore_version=False):
+-        return
+-    log.info(f'Failed to validate "{name.upper()}" files.')
+-
+-    try:
+-        items, download_func, section = __get_upscaler_items(name, version)
+-        if not __download_upscaler_files(
+-            compat_dir,
+-            prefix_dir,
+-            items,
+-            download_func,
+-            section,
+-        ):
+-            raise RuntimeError
+-    except Exception as e:
+-        log.crit(f'Failed to download {name.upper()} dlls.')
+-        log.crit(str(e))
+ 
+ 
+ def download_optiscaler(
+@@ -451,18 +245,6 @@
+         log.crit(e)
+ 
+ 
+-def setup_upscaler(
+-    name: str,
+-    compat_dir: str,
+-    prefix_dir: str,
+-    version: str,
+-) -> bool:
+-    log.info(f'Setting up {name.upper()} version {version}.')
+-    download_upscaler(name, compat_dir, prefix_dir, version)
+-    enabled = check_upscaler(name, compat_dir, prefix_dir, version, ignore_version=True)
+-    return enabled
+-
+-
+ def setup_optiscaler(
+     env: dict,
+     compat_dir: str,
+@@ -534,7 +316,7 @@
+ def __prune_optiscaler_xess(compat_dir, prefix_dir):
+     """Remove unchanged standalone files superseded by a validated nightly."""
+     dlls = ('libxess.dll', 'libxess_dx11.dll', 'libxell.dll', 'libxess_fg.dll')
+-    section = __xess_section
++    section = 'xess_files'
+     destination = Path(prefix_dir) / nightly.ROOT
+     try:
+         with open(Path(compat_dir) / '.optiscaler.lock', 'a') as lock:
+@@ -708,6 +490,59 @@
+         log.warn(f'Keeping OptiScaler DLSS libraries: {error}')
+ 
+ 
++def __setup_optiscaler_xess(env, compat_dir, prefix_dir, *, bundled=False):
++    """Use bundled nightly libraries or the shared stable XeSS runtime."""
++    try:
++        from upscalers import progress, xess
++        from upscalers.storage import data_home
++
++        with open(Path(compat_dir) / '.optiscaler.lock', 'a') as lock:
++            fcntl.flock(lock, fcntl.LOCK_EX)
++            ini = Path(prefix_dir) / nightly.ROOT / 'OptiScaler.ini'
++            original = ini.read_bytes()
++            parser = configparser.ConfigParser(interpolation=None)
++            parser.read_string(original.decode('utf-8-sig'))
++            libraries = parser['Libraries'] if parser.has_section('Libraries') else {}
++            options = {'XeSSPath': 'libxess.dll', 'XeSSDx11Path': 'libxess_dx11.dll',
++                       'XeFGPath': 'libxess_fg.dll', 'XeLLPath': 'libxell.dll'}
++            shared = r'\\?\unix' + str(data_home(env) / 'proton/components/xess').replace('/', '\\') + '\\'
++            managed = {key for key, name in options.items()
++                       if libraries.get(key, '').startswith(shared)
++                       and libraries[key][len(shared):].split('\\')[1:] == [name]}
++            if (bundled or env.get('PROTON_UPSCALER_UPGRADE') != '1') and not env.get('WINE_XESS_PROVIDER'):
++                changes = {('Libraries', key): 'auto' for key in managed}
++            else:
++                for key, name in options.items():
++                    value = libraries.get(key, 'auto').strip()
++                    legacy = ntpath.normcase(ntpath.normpath(value)) in (
++                        ntpath.normcase(r'c:\windows\system32\umu'),
++                        ntpath.normcase(r'c:\windows\system32\umu' + '\\' + name))
++                    if key not in managed and value.lower() not in ('', 'auto') and not legacy:
++                        if managed and not env.get('WINE_XESS_PROVIDER'):
++                            changes = {('Libraries', key): 'auto' for key in managed}
++                            nightly.atomic_write(ini, nightly.update_ini(original, changes))
++                        return
++                try:
++                    with progress.Progress(log=log.info, component='Intel XeSS') as reporter:
++                        directory = xess.prepare(env, reporter.update)
++                except Exception as error:
++                    if env.get('WINE_XESS_PROVIDER'):
++                        raise
++                    log.warn(f'No verified OptiScaler XESS update available: {error}')
++                    changes = {('Libraries', key): 'auto' for key in managed}
++                else:
++                    changes = {('Libraries', key): r'\\?\unix' + str(directory / name).replace('/', '\\')
++                               for key, name in options.items()}
++            if changes:
++                updated = nightly.update_ini(original, changes)
++                if updated != original:
++                    nightly.atomic_write(ini, updated)
++        if bundled:
++            __prune_optiscaler_xess(compat_dir, prefix_dir)
++    except Exception as error:
++        log.warn(f'Keeping OptiScaler XeSS libraries: {error}')
++
++
+ def setup_upscalers(
+     compat_config: set, env: dict, compat_dir: str, prefix_dir: str
+ ) -> None:
+@@ -715,18 +550,7 @@
+ 
+     usage: setup_upscalers(g_session.compat_config, g_session.env, g_compatdata.base_dir, g_compatdata.prefix_dir)
+     """
+-    xess_version = get_version(env, 'PROTON_XESS_UPGRADE', 'default')
+-
+     optiscaler_version = get_version(env, 'PROTON_USE_OPTISCALER', 'default')
+-    upscaler_replace = set()
+-    upscalers = (
+-        ('xess', xess_version, 'xess' in compat_config),
+-    )
+-    for upscaler in upscalers:
+-        name, version, enabled = upscaler
+-        if enabled and setup_upscaler(name, compat_dir, prefix_dir, version):
+-            log.info(f'Automatic {name.upper()} upgrade enabled.')
+-            upscaler_replace.add(name)
+ 
+     if 'optiscaler' in compat_config:
+         optiscaler_enabled = setup_optiscaler(env, compat_dir, prefix_dir, optiscaler_version)
+@@ -737,22 +561,12 @@
+                 installed_nightly = nightly.is_nightly(next(iter(records.values()))['version'])
+             except (KeyError, StopIteration, OSError, ValueError):
+                 pass
+-        if 'xess' not in compat_config:
+-            if installed_nightly:
+-                __prune_optiscaler_xess(compat_dir, prefix_dir)
+-            elif setup_upscaler('xess', compat_dir, prefix_dir, xess_version):
+-                upscaler_replace.add('xess')
+         if optiscaler_enabled:
+             __setup_optiscaler_ffx(env, compat_dir, prefix_dir, bundled=installed_nightly)
+             __setup_optiscaler_dlss(env, compat_dir, prefix_dir)
++            __setup_optiscaler_xess(env, compat_dir, prefix_dir, bundled=installed_nightly)
+         if optiscaler_enabled:
+             log.info('OptiScaler enabled.')
+             env['WINE_OPTISCALER_NAME'] = env.get('PROTON_OPTISCALER_NAME', 'dxgi.dll')
+-            upscaler_replace.clear()
+-
+-    if upscaler_replace:
+-        env['WINE_UPSCALER_REPLACE'] = ','.join(upscaler_replace)
+-        log.debug(f'WINE_UPSCALER_REPLACE: {env["WINE_UPSCALER_REPLACE"]}.')
+-
+ 
+ __all__ = ['setup_upscalers']

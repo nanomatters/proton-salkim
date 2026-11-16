@@ -228,8 +228,8 @@ Game settings override `[global]`. Explicit launch environment variables take
 precedence over their saved values. Non-Steam launchers can use `[umu:<UMU_ID>]`.
 
 
-How are FSR and DLSS upgrades managed?
--------------------------------------
+How are upscaler upgrades managed?
+---------------------------------
 
 Upscaler upgrades are disabled by default. Set `PROTON_UPSCALER_UPGRADE=1`
 globally or per game to enable them.
@@ -242,6 +242,7 @@ The FSR download fetches only the required sections of AMD's driver package when
 Wine upgrades older compatible game SDKs and keeps newer or unrecognised ones.
 On supported NVIDIA GPUs, DLSS libraries are also downloaded automatically and
 shared between games. NVIDIA’s installed NGX runtime remains in use.
+XeSS libraries are downloaded and shared on compatible Intel, AMD and NVIDIA GPUs.
 Downloads use disk space beside the component cache. Choose **Skip updates** to
 continue launching without further downloads. If an update fails, Proton reuses
 a complete verified cached release when available.
@@ -404,7 +405,7 @@ directory directly. Private nightly libraries stay
 under `OptiScaler`. The entry DLL and INI stay in `umu`.
 
 Nightlies use their bundled XeSS and FidelityFX libraries instead of fetching
-extra standalone copies. Explicit XeSS upgrades remain available. Existing
+extra standalone copies. Stable releases use shared XeSS libraries. Existing
 installer-owned duplicates are removed only when unchanged. Modified files
 and custom library paths are preserved.
 

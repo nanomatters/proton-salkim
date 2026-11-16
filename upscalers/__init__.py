@@ -2,7 +2,7 @@
 
 import platform
 
-from . import dlss, ffx, fsr, progress
+from . import dlss, ffx, fsr, progress, xess
 
 
 _HELPERS = frozenset((
@@ -53,6 +53,16 @@ def eligible_nvidia(gpus):
     return False
 
 
+def eligible_xess(gpus):
+    for gpu in gpus:
+        if getattr(getattr(gpu, "deviceType", None), "name", "") not in ("DISCRETE_GPU", "INTEGRATED_GPU"):
+            continue
+        names = {getattr(extension, "extensionName", extension) for extension in gpu.extensions}
+        if ("shaderIntegerDotProduct" in getattr(gpu, "features", ()) or
+                "VK_KHR_shader_integer_dot_product" in names):
+            return True
+    return False
+
 
 def setup(env, *, mode, command, gpu_query, log=print):
     if mode not in ("run", "waitforexitandrun") or not command:
@@ -65,7 +75,7 @@ def setup(env, *, mode, command, gpu_query, log=print):
     enabled = env.get("PROTON_UPSCALER_UPGRADE") == "1"
     explicit_fsr = bool(env.get("WINE_FSR4_PROVIDER"))
     if not enabled and not any(env.get(key) for key in (
-            "WINE_FSR4_PROVIDER", "WINE_FFX_PROVIDER", "WINE_DLSS_PROVIDER")):
+            "WINE_FSR4_PROVIDER", "WINE_FFX_PROVIDER", "WINE_DLSS_PROVIDER", "WINE_XESS_PROVIDER")):
         return False
     devices = None
     provider_ready = False
@@ -88,7 +98,10 @@ def setup(env, *, mode, command, gpu_query, log=print):
         with progress.Progress(log=log, component="NVIDIA DLSS") as reporter:
             dlss_ready = dlss.setup(env, gpu_eligible=lambda: eligible_nvidia(gpus()),
                                    progress=reporter.update, log=log)
-        return provider_ready or dlss_ready
+        with progress.Progress(log=log, component="Intel XeSS") as reporter:
+            xess_ready = xess.setup(env, gpu_eligible=lambda: eligible_xess(gpus()),
+                                   progress=reporter.update, log=log)
+        return provider_ready or dlss_ready or xess_ready
     except Exception as error:
         log("Upscaler component setup failed; keeping the current game configuration: " + str(error))
         return provider_ready
