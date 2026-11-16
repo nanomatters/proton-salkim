@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from upscalers import storage, ffx, progress
+from upscalers import storage, ffx, dlss, progress
 
 
 class SdkFallback(unittest.TestCase):
@@ -41,7 +41,7 @@ class SdkFallback(unittest.TestCase):
             return component.prepare(self.env)
 
     def test_all_sdks_reuse_previous_complete_release_after_new_download_fails(self):
-        for component in (ffx,):
+        for component in (ffx, dlss):
             with self.subTest(component=component.__name__):
                 old, payloads = self.fixture(component, '1.0')
                 previous = self.install(component, old, payloads)
@@ -70,13 +70,13 @@ class SdkFallback(unittest.TestCase):
             self.assertEqual((previous / name).read_bytes(), payloads[item['sha256']])
 
     def test_corrupt_last_selected_release_uses_earlier_verified_release(self):
-        old, payloads = self.fixture(ffx, '1.0')
-        previous = self.install(ffx, old, payloads)
-        newer, payloads = self.fixture(ffx, '2.0')
-        recent = self.install(ffx, newer, payloads)
+        old, payloads = self.fixture(dlss, '1.0')
+        previous = self.install(dlss, old, payloads)
+        newer, payloads = self.fixture(dlss, '2.0')
+        recent = self.install(dlss, newer, payloads)
         (recent / next(iter(newer['files']))).write_bytes(b'corrupt')
-        requested, _ = self.fixture(ffx, '3.0')
-        self.assertEqual(self.offline(ffx, requested), previous)
+        requested, _ = self.fixture(dlss, '3.0')
+        self.assertEqual(self.offline(dlss, requested), previous)
 
     def test_legacy_metadata_cache_works_without_last_good_record(self):
         old, payloads = self.fixture(ffx, '1.0')
@@ -86,8 +86,8 @@ class SdkFallback(unittest.TestCase):
         self.assertEqual(self.offline(ffx, requested), previous)
 
     def test_read_only_last_good_record_does_not_disable_valid_cache(self):
-        data, payloads = self.fixture(ffx, '1.0')
-        previous = self.install(ffx, data, payloads)
+        data, payloads = self.fixture(dlss, '1.0')
+        previous = self.install(dlss, data, payloads)
         (previous.parent / '.last-good.json').unlink(missing_ok=True)
         original = storage.atomic_json
         def no_marker(path, value):
@@ -95,9 +95,9 @@ class SdkFallback(unittest.TestCase):
                 raise OSError('read-only state')
             original(path, value)
         with mock.patch.object(storage, 'atomic_json', side_effect=no_marker), \
-                mock.patch.object(ffx, 'catalog', return_value=data), \
+                mock.patch.object(dlss, 'catalog', return_value=data), \
                 mock.patch.object(storage, 'download_file', side_effect=AssertionError('downloaded valid cache')):
-            self.assertEqual(ffx.prepare(self.env), previous)
+            self.assertEqual(dlss.prepare(self.env), previous)
 
     def test_lock_contention_uses_old_cache_without_network_or_wait(self):
         old, payloads = self.fixture(ffx, '1.0')
@@ -139,15 +139,15 @@ class SdkFallback(unittest.TestCase):
         self.assertEqual(self.offline(ffx, requested), previous)
 
     def test_download_checksum_failure_uses_previous_complete_release(self):
-        old, payloads = self.fixture(ffx, '1.0')
-        previous = self.install(ffx, old, payloads)
-        requested, payloads = self.fixture(ffx, '2.0')
+        old, payloads = self.fixture(dlss, '1.0')
+        previous = self.install(dlss, old, payloads)
+        requested, payloads = self.fixture(dlss, '2.0')
         item = next(iter(requested['files'].values()))
         response = io.BytesIO(b'x' * item['size'])
         response.geturl = lambda: item['url']
-        with mock.patch.object(ffx, 'catalog', return_value=requested), \
+        with mock.patch.object(dlss, 'catalog', return_value=requested), \
                 mock.patch.object(storage.urllib.request, 'urlopen', return_value=response):
-            self.assertEqual(ffx.prepare(self.env), previous)
+            self.assertEqual(dlss.prepare(self.env), previous)
         self.assertFalse((previous.parent / '2.0').exists())
 
     def test_invalid_saved_manifests_never_supply_a_fallback(self):

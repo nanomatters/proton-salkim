@@ -59,7 +59,6 @@ log = Log()
 
 _config_envvars = {
     'wow64': 'PROTON_USE_WOW64',
-    'dlss': 'PROTON_DLSS_UPGRADE',
     'xess': 'PROTON_XESS_UPGRADE',
     'optiscaler': 'PROTON_USE_OPTISCALER',
 }
@@ -97,9 +96,9 @@ def log_environment(env: dict, log_file: io.TextIOWrapper):
         'VKD3D_CONFIG',
         'MANGOHUD',
         'PROTON_DISCORD_BRIDGE',
-        'PROTON_DLSS_UPGRADE',
-        'PROTON_XESS_UPGRADE',
         'PROTON_UPSCALER_UPGRADE',
+        'WINE_DLSS_PROVIDER',
+        'PROTON_XESS_UPGRADE',
         'WINE_FSR4_PROVIDER',
         'WINE_FFX_PROVIDER',
         'PROTON_MLFG_UPGRADE',
@@ -241,7 +240,7 @@ if __name__ == '__main__':
     print("PROTON_ADD_CONFIG:", os.environ["PROTON_ADD_CONFIG"])
     print("config set:", proton_add_config())
 
-    os.environ["PROTON_ADD_CONFIG"] = "wow64,fsr4=4.0.0,xess=0,dlss,enablenvapi,noenv=5,,="
+    os.environ["PROTON_ADD_CONFIG"] = "wow64,xess=0,enablenvapi,noenv=5,,="
     print("PROTON_ADD_CONFIG:", os.environ["PROTON_ADD_CONFIG"])
     print("config set:", proton_add_config())
     for key in os.environ:

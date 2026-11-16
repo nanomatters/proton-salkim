@@ -1,0 +1,630 @@
+From: Erhan Bilgili <erhan.bilgili@gmail.com>
+Subject: [PATCH] upscalers: Use shared DLSS components.
+
+---
+--- a/optiscaler_streamline.py
++++ b/optiscaler_streamline.py
+@@ -52,9 +52,7 @@
+     return item
+ 
+ 
+-def prepare(item, cache, stage, destination):
+-    if not (Path(destination) / 'nvngx_dlssg.dll').is_file():
+-        raise ValueError('Streamline requires the managed nvngx_dlssg.dll')
++def prepare(item, cache, stage):
+     archive = nightly.verified_download(item['download_url'],
+                                        Path(cache) / 'streamline' / (item['sha256'] + '.zip'),
+                                        item['sha256'])
+@@ -95,22 +93,15 @@
+         raise ValueError('Incomplete Streamline runtime')
+     if not any(name.startswith(f'{ROOT}/Licenses/') for name in files):
+         raise ValueError('Streamline SDK contains no licence notices')
+-    for name in DLSS:
+-        if (Path(destination) / name).is_file():
+-            relative = f'{ROOT}/{name}'
+-            link = '../../' + name
+-            (Path(stage) / relative).symlink_to(link)
+-            files[relative] = {'symlink': link}
+     return {name: {**record, 'version': item['version'], 'archive_sha256': item['sha256']}
+             for name, record in files.items()}
+ 
+ 
+ def current(item, destination, records):
+-    if any(f'{ROOT}/{name}' not in records for name in REQUIRED + ('nvngx_dlssg.dll',)):
++    if any(f'{ROOT}/{name}' not in records for name in REQUIRED):
+         return False
+-    for name in DLSS:
+-        if (Path(destination) / name).is_file() != (f'{ROOT}/{name}' in records):
+-            return False
++    if any(f'{ROOT}/{name}' in records for name in DLSS):
++        return False
+     for name, record in records.items():
+         path = Path(destination) / name
+         if (record['version'] != item['version'] or record['archive_sha256'] != item['sha256']
+@@ -137,7 +128,7 @@
+         log.info(f'Updating OptiScaler Streamline runtime to {item["version"]}')
+         with tempfile.TemporaryDirectory(prefix='.streamline-stage-', dir=Path(destination).parent) as tmp:
+             stage = Path(tmp)
+-            files = prepare(item, cache, stage, destination)
++            files = prepare(item, cache, stage)
+             nightly.install(stage, destination, records, files, lambda: commit(files))
+     except Exception as error:
+         log.warn(f'Cannot update Streamline; keeping the previous installation: {error}')
+--- a/tests/test_optiscaler.py
++++ b/tests/test_optiscaler.py
+@@ -10,6 +10,7 @@
+ import tempfile
+ import types
+ import unittest
++import zipfile
+ from pathlib import Path
+ from unittest import mock
+ 
+@@ -28,6 +29,7 @@
+ upscalers = importlib.import_module(package.__name__ + '.upscalers')
+ streamline_setup = upscalers.streamline.setup
+ optiscaler_ffx_setup = upscalers.__setup_optiscaler_ffx
++optiscaler_dlss_setup = upscalers.__setup_optiscaler_dlss
+ 
+ INI = (b'; Header\n[Libraries]\n; Library location\nOptiDllPath=auto\n'
+        b'[Hotfix]\nCheckForUpdate=auto\n[ProcessFilter]\nProcessExclusionList=auto\n')
+@@ -61,6 +63,9 @@
+         sdk = mock.patch.object(upscalers, '__setup_optiscaler_ffx')
+         self.sdk_setup = sdk.start()
+         self.addCleanup(sdk.stop)
++        dlss = mock.patch.object(upscalers, '__setup_optiscaler_dlss')
++        self.dlss_setup = dlss.start()
++        self.addCleanup(dlss.stop)
+ 
+     def package(self, item, cache, stage):
+         files = {'OptiScaler.dll': b'new DLL', 'OptiScaler.ini': INI,
+@@ -94,7 +99,7 @@
+         self.installed()
+         self.assertEqual((self.destination / 'libxess.dll').read_bytes(), b'managed XeSS')
+         self.assertEqual((self.destination / 'OptiScaler/libxess.dll').read_bytes(), b'private XeSS')
+-        self.assertEqual(os.readlink(self.destination / 'OptiScaler/nvngx_dlssd.dll'), '../nvngx_dlssd.dll')
++        self.assertFalse((self.destination / 'OptiScaler/nvngx_dlssd.dll').exists())
+         self.assertEqual(json.loads((self.compat / 'upscaler_files').read_text())['xess_files'], {'keep': 1})
+         for alias in nightly.ALIASES:
+             self.assertEqual(os.readlink(self.destination / alias), 'OptiScaler.dll')
+@@ -139,7 +144,7 @@
+     def test_nightly_skips_implicit_xess_and_fidelityfx_downloads(self):
+         self.bundled_dependencies()
+         env, calls = self.run_upscalers()
+-        self.assertEqual(calls, [('dlss', 'default')])
++        self.assertEqual(calls, [])
+         self.sdk_setup.assert_called_once_with(env, self.compat, self.prefix, bundled=True)
+         self.assertEqual(env['WINE_OPTISCALER_NAME'], 'dxgi.dll')
+         self.assertNotIn('WINE_UPSCALER_REPLACE', env)
+@@ -181,7 +186,8 @@
+         env, calls = self.run_upscalers(optiscaler_enabled=False)
+         self.assertIn(('xess', 'default'), calls)
+         self.sdk_setup.assert_not_called()
+-        self.assertEqual(set(env['WINE_UPSCALER_REPLACE'].split(',')), {'dlss', 'xess'})
++        self.dlss_setup.assert_not_called()
++        self.assertEqual(set(env['WINE_UPSCALER_REPLACE'].split(',')), {'xess'})
+         self.assertNotIn('WINE_OPTISCALER_NAME', env)
+         self.assertTrue((self.destination / 'libxess.dll').exists())
+ 
+@@ -278,7 +284,7 @@
+         with mock.patch.object(nightly, 'resolve', side_effect=OSError('offline')), \
+                 mock.patch.object(upscalers, 'setup_upscaler', return_value=True) as setup:
+             upscalers.setup_upscalers({'optiscaler'}, env, self.compat, self.prefix)
+-        self.assertEqual([call.args[0] for call in setup.call_args_list], ['dlss'])
++        self.assertEqual([call.args[0] for call in setup.call_args_list], [])
+         self.assertEqual(env['WINE_OPTISCALER_NAME'], 'dxgi.dll')
+         self.assertFalse((self.destination / 'libxess.dll').exists())
+ 
+@@ -293,7 +299,7 @@
+         with mock.patch.object(nightly, 'resolve', side_effect=OSError('offline')), \
+                 mock.patch.object(upscalers, 'setup_upscaler', return_value=True) as setup:
+             upscalers.setup_upscalers({'optiscaler'}, env, self.compat, self.prefix)
+-        self.assertEqual([call.args[0] for call in setup.call_args_list], ['dlss', 'xess'])
++        self.assertEqual([call.args[0] for call in setup.call_args_list], ['xess'])
+         self.assertEqual(env['WINE_OPTISCALER_NAME'], 'dxgi.dll')
+         self.assertEqual((self.destination / 'libxess.dll').read_bytes(), b'keep stable dependency')
+ 
+@@ -307,9 +313,10 @@
+         opti.assert_not_called()
+ 
+     def component_upgrades(self):
+-        from upscalers import ffx
++        from upscalers import ffx, dlss
+         return (
+             ('ffx', ffx, optiscaler_ffx_setup, 'FfxDx12Path', 'FfxVkPath', 'amd_fidelityfx_dx12.dll'),
++            ('dlss', dlss, optiscaler_dlss_setup, 'NvngxDlssPath', 'NvngxFeaturePath', None),
+         )
+ 
+     def test_failed_automatic_component_upgrade_resets_managed_paths(self):
+@@ -490,6 +497,129 @@
+             setup.assert_not_called()
+             self.assertNotIn('WINE_UPSCALER_REPLACE', env)
+ 
++    def test_optiscaler_dlss_uses_shared_paths_without_copying(self):
++        from upscalers import dlss, progress
++        shared = self.root / 'shared DLSS'
++        shared.mkdir()
++        ini = self.destination / 'OptiScaler.ini'
++        ini.write_text('[Libraries]\n; keep comment\nNvngxDlssPath=auto\nNvngxFeaturePath=auto\n')
++        with mock.patch.object(dlss, 'prepare', return_value=shared) as prepare, \
++                mock.patch.object(progress, 'Progress'):
++            optiscaler_dlss_setup({'PROTON_UPSCALER_UPGRADE': '1'}, self.compat, self.prefix)
++        expected = r'\\?\unix' + str(shared).replace('/', '\\')
++        parser = nightly.configparser.ConfigParser(interpolation=None)
++        parser.read(ini)
++        self.assertEqual(parser['Libraries']['NvngxDlssPath'], expected)
++        self.assertEqual(parser['Libraries']['NvngxFeaturePath'], expected)
++        self.assertIn('; keep comment', ini.read_text())
++        self.assertFalse(list(self.destination.rglob('nvngx_dlss*.dll')))
++        prepare.assert_called_once()
++
++    def test_streamline_setup_uses_configured_shared_dlss_without_prefix_files(self):
++        from upscalers import dlss, progress
++        shared = self.root / 'shared DLSS'
++        shared.mkdir()
++        for name in upscalers.streamline.DLSS:
++            (shared / name).write_bytes(b'shared runtime')
++        ini = self.destination / 'OptiScaler.ini'
++        ini.write_bytes(INI)
++        with mock.patch.object(dlss, 'prepare', return_value=shared), mock.patch.object(progress, 'Progress'):
++            optiscaler_dlss_setup({'PROTON_UPSCALER_UPGRADE': '1'}, self.compat, self.prefix)
++        archive = self.root / 'streamline.zip'
++        with zipfile.ZipFile(archive, 'w') as output:
++            for name in upscalers.streamline.REQUIRED:
++                output.writestr('bin/x64/' + name, b'plugin')
++            output.writestr('license.txt', b'licence')
++        item = {'version': 'v2.14.16', 'download_url': 'https://example.invalid/fixture.zip', 'sha256': 'a' * 64}
++        records = {}
++        with mock.patch.object(upscalers.streamline, 'resolve', return_value=item), \
++                mock.patch.object(nightly, 'verified_download', return_value=archive):
++            streamline_setup(self.cache, self.destination, records, records.update)
++        self.assertTrue(upscalers.streamline.current(item, self.destination, records))
++        parser = nightly.configparser.ConfigParser(interpolation=None)
++        parser.read(ini)
++        self.assertEqual(parser['Libraries']['NvngxFeaturePath'],
++                         r'\\?\unix' + str(shared).replace('/', '\\'))
++        self.assertFalse(list(self.destination.rglob('nvngx_dlss*.dll')))
++        self.assertTrue(all((shared / name).read_bytes() == b'shared runtime'
++                            for name in upscalers.streamline.DLSS))
++
++    def test_optiscaler_dlss_preserves_explicit_paths_and_presets(self):
++        from upscalers import dlss, progress
++        ini = self.destination / 'OptiScaler.ini'
++        original = '[Libraries]\nNvngxDlssPath=C:\\custom\\dlss.dll\nNvngxFeaturePath=C:\\custom\n'
++        ini.write_text(original)
++        env = {'DXVK_NVAPI_DRS_SETTINGS': 'custom=123'}
++        with mock.patch.object(dlss, 'prepare') as prepare, mock.patch.object(progress, 'Progress'):
++            optiscaler_dlss_setup(env, self.compat, self.prefix)
++        self.assertEqual(ini.read_text(), original)
++        self.assertEqual(env, {'DXVK_NVAPI_DRS_SETTINGS': 'custom=123'})
++        prepare.assert_not_called()
++
++    def test_optiscaler_dlss_keeps_mixed_custom_and_automatic_paths(self):
++        from upscalers import dlss
++        ini = self.destination / 'OptiScaler.ini'
++        for values in ((r'C:\custom\dlss.dll', 'auto'), ('auto', r'C:\custom')):
++            original = '[Libraries]\nNvngxDlssPath=' + values[0] + '\nNvngxFeaturePath=' + values[1] + '\n'
++            ini.write_text(original)
++            with mock.patch.object(dlss, 'prepare') as prepare:
++                optiscaler_dlss_setup({'PROTON_UPSCALER_UPGRADE': '1'}, self.compat, self.prefix)
++            self.assertEqual(ini.read_text(), original)
++            prepare.assert_not_called()
++
++    def test_optiscaler_dlss_updates_managed_and_legacy_paths(self):
++        from upscalers import dlss, progress
++        ini = self.destination / 'OptiScaler.ini'
++        old = self.root / 'proton/components/dlss/old'
++        new = self.root / 'proton/components/dlss/new'
++        ini.write_text('[Libraries]\nNvngxDlssPath=' + r'\\?\unix' + str(old).replace('/', '\\') +
++                       '\nNvngxFeaturePath=C:\\windows\\system32\\umu\n')
++        with mock.patch.object(dlss, 'prepare', return_value=new), mock.patch.object(progress, 'Progress'):
++            optiscaler_dlss_setup({'XDG_DATA_HOME': str(self.root), 'PROTON_UPSCALER_UPGRADE': '1'}, self.compat, self.prefix)
++        self.assertEqual(ini.read_text().count(r'\dlss\new'), 2)
++        self.assertNotIn('old', ini.read_text())
++
++    def test_optiscaler_dlss_failed_prepare_keeps_previous_paths(self):
++        from upscalers import dlss, progress
++        ini = self.destination / 'OptiScaler.ini'
++        ini.write_bytes(INI)
++        with mock.patch.object(dlss, 'prepare', side_effect=OSError('offline')), \
++                mock.patch.object(progress, 'Progress'):
++            optiscaler_dlss_setup({'PROTON_UPSCALER_UPGRADE': '1'}, self.compat, self.prefix)
++        self.assertEqual(ini.read_bytes(), INI)
++
++    def test_shared_dlss_migration_removes_only_owned_unchanged_aliases(self):
++        from upscalers import dlss, progress
++        self.installed()
++        self.dependency_files('opti_files', {'OptiScaler/nvngx_dlss.dll': b'old',
++                                           'OptiScaler/nvngx_dlssd.dll': b'custom',
++                                           'OptiScaler/nvngx_dlssg.dll': b'keep regular file'})
++        alias = self.destination / 'OptiScaler/nvngx_dlss.dll'
++        alias.unlink()
++        alias.symlink_to('../nvngx_dlss.dll')
++        modified = self.destination / 'OptiScaler/nvngx_dlssd.dll'
++        modified.unlink()
++        modified.symlink_to('../user.dll')
++        tracking = self.compat / 'upscaler_files'
++        records = json.loads(tracking.read_text())
++        for name in ('nvngx_dlss.dll', 'nvngx_dlssd.dll', 'nvngx_dlssg.dll'):
++            records['opti_files'][f'{nightly.ROOT}/OptiScaler/{name}']['md5_hash'] = None
++        tracking.write_text(json.dumps(records))
++        with mock.patch.object(dlss, 'prepare', return_value=self.root / 'shared'), \
++                mock.patch.object(progress, 'Progress'):
++            optiscaler_dlss_setup({'PROTON_UPSCALER_UPGRADE': '1'}, self.compat, self.prefix)
++        self.assertFalse(alias.is_symlink())
++        self.assertTrue(modified.is_symlink())
++        self.assertEqual((self.destination / 'OptiScaler/nvngx_dlssg.dll').read_bytes(), b'keep regular file')
++        self.assertNotIn(f'{nightly.ROOT}/OptiScaler/nvngx_dlss.dll', json.loads(tracking.read_text())['opti_files'])
++
++    def test_legacy_dlss_controls_no_longer_download_or_force_presets(self):
++        env = {'PROTON_DLSS_UPGRADE': '310.9.16', 'DXVK_NVAPI_DRS_SETTINGS': 'user=123'}
++        with mock.patch.object(upscalers, 'setup_upscaler') as setup:
++            upscalers.setup_upscalers({'dlss'}, env, self.compat, self.prefix)
++        setup.assert_not_called()
++        self.assertEqual(env, {'PROTON_DLSS_UPGRADE': '310.9.16', 'DXVK_NVAPI_DRS_SETTINGS': 'user=123'})
++
+     def test_streamline_only_follows_installed_nightly(self):
+         archive, item = self.stable_archive()
+         with mock.patch.object(upscalers, '__get_opti_files', return_value=(nightly.ROOT, item)), \
+@@ -517,11 +647,11 @@
+     def test_provider_flags_do_not_change_optiscaler_sdk_selection(self):
+         self.bundled_dependencies()
+         _, calls = self.run_upscalers({'fsr4'}, {'PROTON_FSR4_UPGRADE': '26.10.2'})
+-        self.assertEqual(calls, [('dlss', 'default')])
++        self.assertEqual(calls, [])
+         self.dependency_files('ffx4_files', {'amd_fidelityfx_loader_dx12.dll': b'keep'})
+         before = self.snapshot()
+         _, calls = self.run_upscalers({'fsr4'}, {'PROTON_FSR4_UPGRADE': '4.0.0'})
+-        self.assertEqual(calls, [('dlss', 'default')])
++        self.assertEqual(calls, [])
+         self.assertEqual(self.snapshot(), before)
+ 
+     def test_provider_setup_does_not_overwrite_direct_wine_overrides(self):
+--- a/tests/test_optiscaler_streamline.py
++++ b/tests/test_optiscaler_streamline.py
+@@ -70,16 +70,16 @@
+                 os.readlink(path) if path.is_symlink() else path.read_bytes()
+                 for path in self.destination.rglob('*') if path.is_file() or path.is_symlink()}
+ 
+-    def test_production_only_layout_links_and_licences(self):
++    def test_production_only_layout_and_licences_without_dlss_copies(self):
+         for prefix in ('', 'streamline-sdk-v2.14.1/'):
+             with self.subTest(prefix=prefix):
+                 self.setup(self.archive(prefix=prefix))
+                 self.assertTrue(streamline.current(self.item, self.destination, self.records))
+                 for name in streamline.DLSS:
+                     dll = self.destination / streamline.ROOT / name
+-                    self.assertEqual(os.readlink(dll), '../../' + name)
+-                    self.assertEqual(dll.read_bytes(), b'managed ' + name.encode())
+-                self.assertEqual(len(self.records), 6 + 3 + 2)
++                    self.assertFalse(dll.exists())
++                    self.assertFalse(dll.is_symlink())
++                self.assertEqual(len(self.records), 6 + 2)
+                 self.assertEqual((self.destination / streamline.ROOT / 'Licenses/license.txt').read_bytes(),
+                                  b'SDK license')
+                 self.assertFalse((self.destination / streamline.ROOT / 'development').exists())
+@@ -91,21 +91,31 @@
+             streamline.setup(self.cache, self.destination, self.records, self.commit)
+         download.assert_not_called()
+ 
+-    def test_managed_dlss_upgrade_uses_existing_links(self):
+-        self.setup(self.archive())
+-        (self.destination / 'nvngx_dlssg.dll').write_bytes(b'new managed version')
++    def test_runtime_is_independent_of_prefix_dlss_files(self):
++        for name in streamline.DLSS:
++            (self.destination / name).unlink()
++        self.setup(self.archive())
+         self.assertTrue(streamline.current(self.item, self.destination, self.records))
+-        self.assertEqual((self.destination / streamline.ROOT / 'nvngx_dlssg.dll').read_bytes(),
+-                         b'new managed version')
+-
+-    def test_corrupt_runtime_or_link_is_repaired(self):
++        self.assertFalse(list((self.destination / streamline.ROOT).glob('nvngx_dlss*.dll')))
++
++    def test_migration_removes_old_owned_dlss_links(self):
++        archive = self.archive()
++        self.setup(archive)
++        relative = streamline.ROOT + '/nvngx_dlssg.dll'
++        (self.destination / relative).symlink_to('../../nvngx_dlssg.dll')
++        self.records[relative] = {'version': self.item['version'], 'archive_sha256': self.item['sha256'],
++                                  'symlink': '../../nvngx_dlssg.dll'}
++        self.assertFalse(streamline.current(self.item, self.destination, self.records))
++        self.setup(archive)
++        self.assertTrue(streamline.current(self.item, self.destination, self.records))
++        self.assertFalse((self.destination / relative).is_symlink())
++        self.assertTrue((self.destination / 'nvngx_dlssg.dll').is_file())
++
++    def test_corrupt_runtime_is_repaired(self):
+         archive = self.archive()
+         self.setup(archive)
+         target = self.destination / streamline.ROOT / 'sl.common.dll'
+         target.write_bytes(b'corrupt')
+-        link = self.destination / streamline.ROOT / 'nvngx_dlssg.dll'
+-        link.unlink()
+-        link.symlink_to('../../nvngx_dlss.dll')
+         self.assertFalse(streamline.current(self.item, self.destination, self.records))
+         self.setup(archive)
+         self.assertTrue(streamline.current(self.item, self.destination, self.records))
+@@ -118,7 +128,7 @@
+             streamline.setup(self.cache, self.destination, self.records, self.commit)
+         self.assertEqual(before, self.snapshot())
+ 
+-    def test_failed_commit_rolls_back_runtime_and_links(self):
++    def test_failed_commit_rolls_back_runtime(self):
+         archive = self.archive()
+         self.setup(archive)
+         before, records = self.snapshot(), self.records.copy()
+@@ -170,16 +180,11 @@
+         self.assertEqual(list(outside.iterdir()), [])
+         self.assertFalse(self.records)
+ 
+-    def test_incomplete_archive_or_missing_fg_keeps_existing_install(self):
++    def test_incomplete_archive_keeps_existing_install(self):
+         self.setup(self.archive())
+         before = self.snapshot()
+         self.setup(self.archive(omit=('sl.common.dll',)))
+         self.assertEqual(before, self.snapshot())
+-        (self.destination / 'nvngx_dlssg.dll').unlink()
+-        before = self.snapshot()
+-        self.setup(self.archive(extra=[('bin/x64/sl.new.dll', b'new')]))
+-        self.assertEqual(before, self.snapshot())
+-
+     def test_traversal_links_duplicates_and_ambiguous_layout_are_rejected(self):
+         link = zipfile.ZipInfo('bin/x64/sl.bad.dll')
+         link.create_system = 3
+--- a/upscalers.py
++++ b/upscalers.py
+@@ -7,11 +7,8 @@
+ import lzma
+ import ntpath
+ import os
+-import tarfile
+ import tempfile
+ import urllib.request
+-from functools import lru_cache
+-from urllib.error import HTTPError, URLError
+ import zipfile
+ from pathlib import Path
+ from typing import Callable, Union
+@@ -71,20 +68,6 @@
+     return dlls[-1]
+ 
+ 
+-@lru_cache(maxsize=32)
+-def __dll_download_exists(url: str) -> bool:
+-    try:
+-        req = urllib.request.Request(url, method='HEAD')
+-        with urllib.request.urlopen(req, timeout=2) as response:
+-            if response.status == 200:
+-                log.info(f'Found reachable URL {url}')
+-                return True
+-    except (HTTPError, URLError, ValueError) as e:
+-        log.debug(f'URL {url} returned {e}')
+-    return False
+-
+-
+-__dlss_section = 'dlss_files'
+ __xess_section = 'xess_files'
+ __opti_section = 'opti_files'
+ __version_file = 'upscaler_files'
+@@ -92,18 +75,6 @@
+ 
+ def __get_opti_files(version: str = 'default') -> tuple[str, dict]:
+     return 'drive_c/windows/system32/umu/', __get_dll_manifest('optiscaler', version)
+-
+-
+-def __get_dlss_dlls(version: str = 'default') -> dict:
+-    return {
+-        'drive_c/windows/system32/umu/nvngx_dlss.dll': __get_dll_manifest('dlss', version),
+-        'drive_c/windows/system32/umu/nvngx_dlssd.dll': __get_dll_manifest(
+-            'dlss_d', version
+-        ),
+-        'drive_c/windows/system32/umu/nvngx_dlssg.dll': __get_dll_manifest(
+-            'dlss_g', version
+-        ),
+-    }
+ 
+ 
+ def __get_xess_dlls(version: str = 'default') -> dict:
+@@ -121,7 +92,6 @@
+ 
+ def __get_upscaler_items(name: str, version: str) -> tuple[dict, Callable, str]:
+     upscalers = {
+-        'dlss': (__get_dlss_dlls, __download_extract_zip, __dlss_section),
+         'xess': (__get_xess_dlls, __download_extract_zip, __xess_section),
+     }
+     get_items, dlfunc, section = upscalers[name]
+@@ -237,7 +207,7 @@
+ ) -> bool:
+     """Check for upscaler files and their versions
+ 
+-    name: the name of the upscaler, possible values dlss, xess
++    name: the name of the upscaler, possible values xess
+     version: the version of the upscaler dll to download
+     ignore_version: ignore version mismatch but still check if the dlls are present
+     """
+@@ -406,7 +376,7 @@
+ ) -> None:
+     """Check for upscaler files and their versions
+ 
+-    name: the name of the upscaler, possible values dlss, xess
++    name: the name of the upscaler, possible values xess
+     version: the version of the upscaler dll to download
+     """
+     if check_upscaler(name, compat_dir, prefix_dir, version, ignore_version=False):
+@@ -451,13 +421,6 @@
+             stage = Path(tmp)
+             if nightly.is_nightly(version):
+                 hashes = nightly.prepare(item, cache_dir, stage)
+-                # Let the nightly discover managed DLSS/RR/FG without owning copies.
+-                for name in ('nvngx_dlss.dll', 'nvngx_dlssd.dll', 'nvngx_dlssg.dll'):
+-                    alias = 'OptiScaler/' + name
+-                    if (destination / name).is_file() and alias not in hashes:
+-                        (stage / 'OptiScaler').mkdir(exist_ok=True)
+-                        (stage / alias).symlink_to('../' + name)
+-                        hashes[alias] = None
+             else:
+                 cached_file = cache_dir / Path(unquote(urlparse(item['download_url']).path)).name
+                 __cached_download(item, cached_file)
+@@ -562,34 +525,6 @@
+             nightly.atomic_write(ini, updated)
+ 
+     return enabled
+-
+-
+-def clean_upscaler(
+-    name: str,
+-    compat_dir: str,
+-    prefix_dir: str,
+-) -> bool:
+-    try:
+-        _, _, section = __get_upscaler_items(name, 'default')
+-    except Exception:
+-        return False
+-
+-    log.info(f'Cleaning {name.upper()} files.')
+-
+-    try:
+-        tracked_items = __get_tracked_items(compat_dir, section)
+-    except Exception:
+-        return False
+-
+-    __set_tracked_items(compat_dir, section, {})
+-
+-    for path in tracked_items:
+-        file = os.path.join(prefix_dir, path)
+-        if os.path.exists(file):
+-            log.debug(f'Removing {file}')
+-            os.unlink(file)
+-
+-    return True
+ 
+ 
+ def get_version(env: dict, key: str, fallback: str) -> str:
+@@ -693,6 +628,86 @@
+         log.warn(f'Keeping OptiScaler FidelityFX libraries: {error}')
+ 
+ 
++def __prune_optiscaler_dlss_links(compat_dir, prefix_dir):
++    try:
++        tracked = __get_tracked_items(compat_dir, __opti_section)
++    except (KeyError, FileNotFoundError):
++        return
++    destination = Path(prefix_dir) / nightly.ROOT
++    removed = []
++    remaining = dict(tracked)
++    for name in ('nvngx_dlss.dll', 'nvngx_dlssd.dll', 'nvngx_dlssg.dll'):
++        relative = 'OptiScaler/' + name
++        key = f'{nightly.ROOT}/{relative}'
++        path = destination / relative
++        if (key in tracked and tracked[key].get('md5_hash') is None and path.is_symlink()
++                and os.readlink(path) == '../' + name):
++            removed.append(relative)
++            del remaining[key]
++    if removed:
++        nightly.install(destination, destination, removed, (),
++                        lambda: __set_tracked_items(compat_dir, __opti_section, remaining))
++
++
++def __setup_optiscaler_dlss(env, compat_dir, prefix_dir):
++    """Point OptiScaler and its Streamline runtime at the shared DLSS files."""
++    try:
++        from upscalers import dlss, progress
++        from upscalers.storage import data_home
++
++        with open(Path(compat_dir) / '.optiscaler.lock', 'a') as lock:
++            fcntl.flock(lock, fcntl.LOCK_EX)
++            ini = Path(prefix_dir) / nightly.ROOT / 'OptiScaler.ini'
++            original = ini.read_bytes()
++            parser = configparser.ConfigParser(interpolation=None)
++            parser.read_string(original.decode('utf-8-sig'))
++            libraries = parser['Libraries'] if parser.has_section('Libraries') else {}
++            shared = r'\\?\unix' + str(data_home(env) / 'proton/components/dlss').replace('/', '\\') + '\\'
++            keys = ('NvngxDlssPath', 'NvngxFeaturePath')
++            managed_keys = {key for key in keys
++                            if libraries.get(key, '').startswith(shared)
++                            and '\\' not in libraries[key][len(shared):]}
++            if env.get('PROTON_UPSCALER_UPGRADE') != '1' and not env.get('WINE_DLSS_PROVIDER'):
++                changes = {('Libraries', key): 'auto' for key in keys
++                           if libraries.get(key, '').startswith(shared)
++                           and '\\' not in libraries[key][len(shared):]}
++                if changes:
++                    nightly.atomic_write(ini, nightly.update_ini(original, changes))
++                return
++            options = []
++            for key in keys:
++                value = libraries.get(key, 'auto').strip()
++                managed = value.startswith(shared) and '\\' not in value[len(shared):]
++                if (managed or value.lower() in ('', 'auto') or
++                        ntpath.normcase(ntpath.normpath(value)) == ntpath.normcase(r'c:\windows\system32\umu')):
++                    options.append(key)
++                else:
++                    if managed_keys and not env.get('WINE_DLSS_PROVIDER'):
++                        changes = {('Libraries', key): 'auto' for key in managed_keys}
++                        nightly.atomic_write(ini, nightly.update_ini(original, changes))
++                    return
++            try:
++                with progress.Progress(log=log.info) as reporter:
++                    directory = dlss.prepare(env, reporter.update)
++            except Exception as error:
++                if env.get('WINE_DLSS_PROVIDER'):
++                    raise
++                log.warn(f'No verified OptiScaler DLSS update available: {error}')
++                changes = {('Libraries', key): 'auto' for key in options
++                           if libraries.get(key, '').startswith(shared)
++                           and '\\' not in libraries[key][len(shared):]}
++            else:
++                path = r'\\?\unix' + str(directory).replace('/', '\\')
++                changes = {('Libraries', key): path for key in options}
++            updated = nightly.update_ini(original, changes)
++            if updated != original:
++                nightly.atomic_write(ini, updated)
++            if changes.get(('Libraries', 'NvngxFeaturePath')) not in (None, 'auto'):
++                __prune_optiscaler_dlss_links(compat_dir, prefix_dir)
++    except Exception as error:
++        log.warn(f'Keeping OptiScaler DLSS libraries: {error}')
++
++
+ def setup_upscalers(
+     compat_config: set, env: dict, compat_dir: str, prefix_dir: str
+ ) -> None:
+@@ -700,13 +715,11 @@
+ 
+     usage: setup_upscalers(g_session.compat_config, g_session.env, g_compatdata.base_dir, g_compatdata.prefix_dir)
+     """
+-    dlss_version = get_version(env, 'PROTON_DLSS_UPGRADE', 'default')
+     xess_version = get_version(env, 'PROTON_XESS_UPGRADE', 'default')
+ 
+     optiscaler_version = get_version(env, 'PROTON_USE_OPTISCALER', 'default')
+     upscaler_replace = set()
+     upscalers = (
+-        ('dlss', dlss_version, 'dlss' in compat_config or 'optiscaler' in compat_config),
+         ('xess', xess_version, 'xess' in compat_config),
+     )
+     for upscaler in upscalers:
+@@ -731,24 +744,12 @@
+                 upscaler_replace.add('xess')
+         if optiscaler_enabled:
+             __setup_optiscaler_ffx(env, compat_dir, prefix_dir, bundled=installed_nightly)
++            __setup_optiscaler_dlss(env, compat_dir, prefix_dir)
+         if optiscaler_enabled:
+             log.info('OptiScaler enabled.')
+             env['WINE_OPTISCALER_NAME'] = env.get('PROTON_OPTISCALER_NAME', 'dxgi.dll')
+             upscaler_replace.clear()
+ 
+-    if 'dlss' in upscaler_replace:
+-        env.setdefault(
+-            'DXVK_NVAPI_DRS_SETTINGS',
+-            'ngx_dlss_sr_override=on,'
+-            'ngx_dlss_rr_override=on,'
+-            'ngx_dlss_fg_override=on,'
+-            'ngx_dlss_sr_override_render_preset_selection=default,'
+-            'ngx_dlss_rr_override_render_preset_selection=default,',
+-        )
+-
+-    if 'xess' in upscaler_replace:
+-        pass
+-
+     if upscaler_replace:
+         env['WINE_UPSCALER_REPLACE'] = ','.join(upscaler_replace)
+         log.debug(f'WINE_UPSCALER_REPLACE: {env["WINE_UPSCALER_REPLACE"]}.')

@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "version": "310.9.16",
+  "source": "https://github.com/NVIDIA/DLSS/releases/tag/v310.9.16",
+  "files": {
+    "nvngx_dlss.dll": {
+      "url": "https://raw.githubusercontent.com/NVIDIA/DLSS/9981c6350dc58c0ce21f024fd65e31e851c31689/lib/Windows_x86_64/rel/nvngx_dlss.dll",
+      "size": 58956912,
+      "sha256": "d00b5b0ab29c3ca101b70c3a5ecb3a01b7ef33766a3383a28a18623083e6123e",
+      "file_version": "310.9.16.0"
+    },
+    "nvngx_dlssd.dll": {
+      "url": "https://raw.githubusercontent.com/NVIDIA/DLSS/9981c6350dc58c0ce21f024fd65e31e851c31689/lib/Windows_x86_64/rel/nvngx_dlssd.dll",
+      "size": 48343664,
+      "sha256": "b49435ae346f227feafe7bbe937d88277ea0ee7323975ec06488f377fdb46cee",
+      "file_version": "310.9.16.0"
+    },
+    "nvngx_dlssg.dll": {
+      "url": "https://raw.githubusercontent.com/NVIDIA/DLSS/9981c6350dc58c0ce21f024fd65e31e851c31689/lib/Windows_x86_64/rel/nvngx_dlssg.dll",
+      "size": 7506544,
+      "sha256": "8d59d49b36410dd6b62fef2503a5871d347415bd85d943fa0848563a95dd50c7",
+      "file_version": "310.9.16.0"
+    }
+  }
+}

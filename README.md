@@ -228,8 +228,8 @@ Game settings override `[global]`. Explicit launch environment variables take
 precedence over their saved values. Non-Steam launchers can use `[umu:<UMU_ID>]`.
 
 
-How are AMD FSR upgrades managed?
---------------------------------
+How are FSR and DLSS upgrades managed?
+-------------------------------------
 
 Upscaler upgrades are disabled by default. Set `PROTON_UPSCALER_UPGRADE=1`
 globally or per game to enable them.
@@ -240,6 +240,8 @@ download and extraction; installed components are reused under `~/.local/share/p
 FSR providers live in `fsr/<driver-version>/`; existing caches are migrated when safe.
 The FSR download fetches only the required sections of AMD's driver package when the server supports partial downloads.
 Wine upgrades older compatible game SDKs and keeps newer or unrecognised ones.
+On supported NVIDIA GPUs, DLSS libraries are also downloaded automatically and
+shared between games. NVIDIA’s installed NGX runtime remains in use.
 Downloads use disk space beside the component cache. Choose **Skip updates** to
 continue launching without further downloads. If an update fails, Proton reuses
 a complete verified cached release when available.
@@ -397,12 +399,12 @@ releases again.
 
 Nightlies also fetch the latest official NVIDIA Streamline runtime for the
 frame-generation combinations that require it. Its DLLs and licence notices
-are installed under `umu/OptiScaler/streamline`, with links to the existing
-managed DLSS DLLs instead of duplicate copies. Private nightly libraries stay
+are installed under `umu/OptiScaler/streamline` and use the shared DLSS
+directory directly. Private nightly libraries stay
 under `OptiScaler`. The entry DLL and INI stay in `umu`.
 
 Nightlies use their bundled XeSS and FidelityFX libraries instead of fetching
-extra standalone copies. Explicit upscaler upgrades remain available. Existing
+extra standalone copies. Explicit XeSS upgrades remain available. Existing
 installer-owned duplicates are removed only when unchanged. Modified files
 and custom library paths are preserved.
 

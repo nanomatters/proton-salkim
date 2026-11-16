@@ -18,8 +18,9 @@ class UpscalerPackagingTests(unittest.TestCase):
         self.source = self.directory / "source"
         self.package = self.source / "upscalers"
         (self.package / "releases").mkdir(parents=True)
-        for name in ("__init__.py", "progress.py", "fsr.py", "ffx.py", "sevenzip.py", "storage.py"):
+        for name in ("__init__.py", "progress.py", "fsr.py", "ffx.py", "dlss.py", "sevenzip.py", "storage.py"):
             (self.package / name).write_text("# current " + name + "\n")
+        (self.package / "releases/dlss.json").write_text('{"version": "sdk"}\n')
         (self.package / "releases/ffx.json").write_text('{"version": "sdk"}\n')
         (self.package / "releases/fsr.json").write_text('{"version": "current"}\n')
         (self.source / "Makefile.in").write_text("# build rules\n")
@@ -50,8 +51,8 @@ class UpscalerPackagingTests(unittest.TestCase):
             (location / "progress.pyc").write_bytes(b"bytecode")
         (self.package / "developer-notes.md").write_text("not a runtime file\n")
         self.build()
-        expected = {".stamp", "__init__.py", "progress.py", "fsr.py", "ffx.py", "sevenzip.py", "storage.py",
-                    "releases/fsr.json", "releases/ffx.json"}
+        expected = {".stamp", "__init__.py", "progress.py", "fsr.py", "ffx.py", "dlss.py", "sevenzip.py", "storage.py",
+                    "releases/fsr.json", "releases/ffx.json", "releases/dlss.json"}
         self.assertEqual({str(path.relative_to(self.destination))
                           for path in self.destination.rglob("*") if path.is_file()}, expected)
         self.assertEqual((self.destination / "progress.py").read_bytes(), (self.package / "progress.py").read_bytes())

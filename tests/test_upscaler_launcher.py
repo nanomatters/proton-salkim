@@ -9,10 +9,11 @@ from unittest import mock
 
 from proton_config import Settings
 import upscalers
-from upscalers import ffx, fsr, storage
+from upscalers import dlss, ffx, fsr, storage
 
 
 ROOT = Path(__file__).resolve().parents[1]
+dlss_setup = dlss.setup
 
 
 def gpu(vendor, *extensions, kind="DISCRETE_GPU"):
@@ -41,6 +42,9 @@ class LauncherIntegration(unittest.TestCase):
         sdk = mock.patch.object(ffx, "setup", return_value=True)
         self.sdk = sdk.start()
         self.addCleanup(sdk.stop)
+        nvidia = mock.patch.object(dlss, "setup", return_value=False)
+        self.dlss = nvidia.start()
+        self.addCleanup(nvidia.stop)
 
     def run_setup(self, mode='waitforexitandrun', command=None):
         return upscalers.setup(self.env,
@@ -176,6 +180,44 @@ class LauncherIntegration(unittest.TestCase):
             self.assertFalse(self.run_setup())
         store.assert_not_called()
 
+    def test_nvidia_eligibility_requires_tensor_capable_hardware(self):
+        for extension in ('VK_KHR_cooperative_matrix', 'VK_NV_cooperative_matrix'):
+            self.assertTrue(upscalers.eligible_nvidia([gpu(0x10de, extension)]))
+            self.assertFalse(upscalers.eligible_nvidia([gpu(0x1002, extension)]))
+            self.assertFalse(upscalers.eligible_nvidia([gpu(0x10de, extension, kind='CPU')]))
+        self.assertFalse(upscalers.eligible_nvidia([gpu(0x10de)]))
+        self.assertFalse(upscalers.eligible_nvidia([]))
+
+    def test_nvidia_download_is_automatic_and_queries_vulkan_once(self):
+        self.query.return_value = iter([gpu(0x10de, 'VK_KHR_cooperative_matrix')])
+        self.dlss.side_effect = lambda env, **options: dlss_setup(env, **options)
+        directory = self.root / 'shared DLSS'
+        directory.mkdir()
+        with mock.patch.object(dlss, 'prepare', return_value=directory), mock.patch.object(fsr, 'Store') as store:
+            self.assertTrue(self.run_setup())
+        self.assertEqual(self.env['WINE_DLSS_PROVIDER'], str(directory))
+        self.query.assert_called_once()
+        store.assert_not_called()
+        self.assertFalse(self.prefix.exists())
+
+    def test_custom_dlss_directory_does_not_require_nvidia_hardware(self):
+        directory = self.root / 'custom DLSS'
+        directory.mkdir()
+        self.env['WINE_DLSS_PROVIDER'] = str(directory)
+        self.dlss.side_effect = lambda env, **options: dlss_setup(env, **options)
+        with mock.patch.object(fsr, 'setup', return_value=False):
+            self.assertTrue(self.run_setup())
+        self.query.assert_not_called()
+        self.assertEqual(self.env['WINE_DLSS_PROVIDER'], str(directory))
+
+    def test_dlss_download_failure_keeps_the_fsr_provider(self):
+        self.query.return_value = [gpu(0x10de, 'VK_NV_cooperative_matrix')]
+        self.dlss.side_effect = lambda env, **options: dlss_setup(env, **options)
+        with mock.patch.object(fsr, 'setup', return_value=True), \
+                mock.patch.object(dlss, 'prepare', side_effect=OSError('offline')):
+            self.assertTrue(self.run_setup())
+        self.assertNotIn('WINE_DLSS_PROVIDER', self.env)
+
     def test_custom_provider_and_lite_bypass_hardware_detection(self):
         self.env.update(WINE_FSR4_PROVIDER="/custom/amdxcffx64.dll", WINE_FSR4_LITE="1")
         self.query.side_effect = AssertionError("GPU queried")
@@ -236,6 +278,7 @@ class LauncherIntegration(unittest.TestCase):
                     self.assertFalse(self.run_setup())
         setup.assert_not_called()
         self.sdk.assert_not_called()
+        self.dlss.assert_not_called()
         self.query.assert_not_called()
 
     def test_explicit_provider_works_without_automatic_upgrades(self):
@@ -303,13 +346,13 @@ class LauncherIntegration(unittest.TestCase):
         directory = self.root / "manual provider"
         directory.mkdir()
         # prepare() is also used directly by OptiScaler.
-        for component, key in ((ffx, "WINE_FFX_PROVIDER"),):
+        for component, key in ((dlss, "WINE_DLSS_PROVIDER"), (ffx, "WINE_FFX_PROVIDER"),):
             with self.subTest(component=key), mock.patch.object(component, "prepare_libraries") as prepare:
                 with self.assertRaises(storage.ComponentError):
                     component.prepare(disabled)
                 self.assertEqual(component.prepare({**disabled, key: str(directory)}), directory)
                 prepare.assert_not_called()
-        for setup in (fsr.setup,):
+        for setup in (fsr.setup, dlss_setup):
             self.assertFalse(setup(disabled, gpu_eligible=lambda: self.fail("GPU queried")))
 
     def test_old_add_config_aliases_do_not_set_upgrade_flags(self):
@@ -324,7 +367,7 @@ class LauncherIntegration(unittest.TestCase):
         namespace["proton_add_config"]()
         self.assertNotIn("PROTON_FSR4_UPGRADE", env)
         self.assertNotIn("FSR4_UPGRADE", env)
-        self.assertEqual(env["PROTON_DLSS_UPGRADE"], "1")
+        self.assertNotIn("PROTON_DLSS_UPGRADE", env)
 
 
 if __name__ == "__main__":
