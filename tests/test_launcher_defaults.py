@@ -98,6 +98,28 @@ class LauncherDefaults(unittest.TestCase):
                     exec(compile_statements([assignment]), namespace)
                     self.assertEqual(namespace["use_nvapi"], expected)
 
+    def test_upscaler_info_controls_both_vendor_indicators(self):
+        method = next(node for node in SESSION.body if isinstance(node, ast.FunctionDef)
+                      and node.name == "check_environment")
+        statements = [node for node in INIT_SESSION.body if
+                      has_string(node, "PROTON_UPSCALER_INFO") or
+                      isinstance(node, ast.If) and has_string(node.test, "upscalerinfo")]
+        for value in (None, "", "0", "1"):
+            with self.subTest(value=value):
+                environment = {} if value is None else {"PROTON_UPSCALER_INFO": value}
+                session = SimpleNamespace(env=environment, compat_config=set())
+                namespace = {"self": session, "nonzero": lambda value: bool(value) and value != "0"}
+                exec(compile_statements([method]), namespace)
+                session.check_environment = lambda *args: namespace["check_environment"](session, *args)
+                exec(compile_statements(statements), namespace)
+                enabled = value == "1"
+                self.assertEqual(environment.get("FSR_WATERMARK"), "1" if enabled else None)
+                self.assertEqual(environment.get("FSR_FG_WATERMARK"), "1" if enabled else None)
+                self.assertEqual(environment["DXVK_NVAPI_SET_NGX_DEBUG_OPTIONS"],
+                                 "DLSSIndicator=1024,DLSSGIndicator=2," if enabled else
+                                 "DLSSIndicator=0,DLSSGIndicator=0,")
+                self.assertNotIn("PROTON_UPSCALER_UPGRADE", environment)
+
     def test_fex_cache_default_and_overrides(self):
         block = next(node for node in INIT_SESSION.body if isinstance(node, ast.If)
                      and has_string(node.test, "aarch64") and has_string(node, "FEX_DISKCACHE"))

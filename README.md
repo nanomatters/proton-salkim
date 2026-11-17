@@ -257,6 +257,11 @@ Use `WINE_FSR4_LITE=1` to request Lite elsewhere, or `=0` to disable that defaul
 Explicit `WINE_FSR4_PROVIDER` paths leave model selection to the user. Select FSR and frame generation in the game's settings as usual.
 
 
+Set `PROTON_UPSCALER_INFO=1` to show the available FSR and DLSS upscaling and
+frame-generation indicators, independently of component upgrades.
+XeSS indicators are not included.
+
+
 How do I enable the HUD with PROTON_HUD?
 ---------------------------------------
 

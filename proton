@@ -2038,8 +2038,7 @@ class Session:
         self.check_environment("PROTON_PREFER_SDL", "sdlinput")
         self.check_environment("PROTON_USE_SDL", "sdlinput")
         self.check_environment("PROTON_USE_PIPEWIRE", "pipewire")
-        self.check_environment("PROTON_FSR4_INDICATOR", "fsr4hud")
-        self.check_environment("PROTON_DLSS_INDICATOR", "dlsshud")
+        self.check_environment("PROTON_UPSCALER_INFO", "upscalerinfo")
         self.check_environment("PROTON_NATIVE_AGS", "nativeags")
 
         if "noesync" in self.compat_config:
@@ -2441,11 +2440,9 @@ class Session:
         if update_prefix_files:
             g_compatdata.setup_prefix()
 
-        if "fsr4hud" in self.compat_config:
+        if "upscalerinfo" in self.compat_config:
             self.env["FSR_WATERMARK"] = "1"
             self.env["FSR_FG_WATERMARK"] = "1"
-
-        if "dlsshud" in self.compat_config:
             self.env["DXVK_NVAPI_SET_NGX_DEBUG_OPTIONS"] = "DLSSIndicator=1024,DLSSGIndicator=2,"
         else:
             self.env.setdefault("DXVK_NVAPI_SET_NGX_DEBUG_OPTIONS", "DLSSIndicator=0,DLSSGIndicator=0,")

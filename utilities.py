@@ -96,6 +96,7 @@ def log_environment(env: dict, log_file: io.TextIOWrapper):
         'MANGOHUD',
         'PROTON_DISCORD_BRIDGE',
         'PROTON_UPSCALER_UPGRADE',
+        'PROTON_UPSCALER_INFO',
         'WINE_DLSS_PROVIDER',
         'WINE_XESS_PROVIDER',
         'WINE_FSR4_PROVIDER',
