@@ -53,6 +53,13 @@ class DlssComponents(unittest.TestCase):
         self.assertNotIn("WINE_DLSS_PROVIDER", self.env)
         self.assertFalse((self.root / "proton").exists())
 
+    def test_optiscaler_can_prepare_dlss_without_enabling_game_upgrades(self):
+        del self.env["PROTON_UPSCALER_UPGRADE"]
+        self.assertFalse(dlss.setup(self.env, gpu_eligible=True))
+        self.downloads.assert_not_called()
+        self.assertTrue((dlss.prepare(self.env) / "nvngx_dlss.dll").is_file())
+        self.assertNotIn("WINE_DLSS_PROVIDER", self.env)
+
     def test_explicit_path_bypasses_hardware_and_manifest_selection(self):
         path = self.root / "manual DLSS"
         path.mkdir()

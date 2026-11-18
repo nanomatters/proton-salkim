@@ -35,8 +35,6 @@ def prepare(env, progress=None, *, log=print):
     override = directory_override(env, "WINE_DLSS_PROVIDER")
     if override:
         return override
-    if env.get("PROTON_UPSCALER_UPGRADE") != "1":
-        raise ComponentError("Automatic component upgrades are disabled")
     return prepare_libraries(env, "dlss", catalog(), progress, log=log)
 
 

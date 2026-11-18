@@ -393,8 +393,7 @@ class LauncherIntegration(unittest.TestCase):
         directory = self.root / "manual provider"
         directory.mkdir()
         # prepare() is also used directly by OptiScaler.
-        for component, key in ((dlss, "WINE_DLSS_PROVIDER"), (xess, "WINE_XESS_PROVIDER"),
-                               (ffx, "WINE_FFX_PROVIDER")):
+        for component, key in ((xess, "WINE_XESS_PROVIDER"), (ffx, "WINE_FFX_PROVIDER")):
             with self.subTest(component=key), mock.patch.object(component, "prepare_libraries") as prepare:
                 with self.assertRaises(storage.ComponentError):
                     component.prepare(disabled)

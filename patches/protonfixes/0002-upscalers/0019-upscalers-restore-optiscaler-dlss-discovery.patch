@@ -1,0 +1,444 @@
+From: Erhan Bilgili <erhan.bilgili@gmail.com>
+Subject: [PATCH] upscalers: Restore DLSS discovery for OptiScaler.
+
+---
+diff --git a/optiscaler_nightly.py b/optiscaler_nightly.py
+index 79a8d33..271f4af 100644
+--- a/optiscaler_nightly.py
++++ b/optiscaler_nightly.py
+@@ -230,8 +230,6 @@ def prepare(item, cache, stage):
+     library_path = r'c:\windows\system32\umu'
+     changes = {
+         ('Libraries', 'OptiDllPath'): library_path + r'\OptiScaler',
+-        ('Libraries', 'NvngxDlssPath'): library_path,
+-        ('Libraries', 'NvngxFeaturePath'): library_path,
+         ('Hotfix', 'CheckForUpdate'): 'false',
+         ('ProcessFilter', 'ProcessExclusionList'): '|'.join(EXCLUDED_PROCESSES),
+     }
+diff --git a/tests/test_optiscaler.py b/tests/test_optiscaler.py
+index 66a4ae4..26f1d47 100644
+--- a/tests/test_optiscaler.py
++++ b/tests/test_optiscaler.py
+@@ -323,7 +323,7 @@ class OptiscalerTests(unittest.TestCase):
+         from upscalers import dlss, ffx, xess
+         return (
+             ('ffx', ffx, optiscaler_ffx_setup, 'FfxDx12Path', 'FfxVkPath', 'amd_fidelityfx_dx12.dll'),
+-            ('dlss', dlss, optiscaler_dlss_setup, 'NvngxDlssPath', 'NvngxFeaturePath', None),
++            ('dlss', dlss, optiscaler_dlss_setup, 'NvngxDlssPath', 'NvngxFeaturePath', 'nvngx_dlss.dll'),
+             ('xess', xess, optiscaler_xess_setup, 'XeSSPath', 'XeLLPath', 'libxess.dll'),
+         )
+ 
+@@ -399,6 +399,8 @@ class OptiscalerTests(unittest.TestCase):
+     def test_default_leaves_fresh_and_custom_ini_untouched(self):
+         ini = self.destination / 'OptiScaler.ini'
+         for name, component, setup, key, other, filename in self.component_upgrades():
++            if name == 'dlss':
++                continue  # The SR library is also required for OptiScaler input detection.
+             for value in ('auto', r'C:\custom\runtime.dll'):
+                 with self.subTest(component=name, value=value):
+                     original = '[Libraries]\n; keep comment\n' + key + '=' + value + '\n'
+@@ -410,6 +412,7 @@ class OptiscalerTests(unittest.TestCase):
+ 
+     def test_disabled_component_upgrades_reset_only_managed_paths(self):
+         ini = self.destination / 'OptiScaler.ini'
++        (self.destination / 'nvngx_dlss.dll').write_bytes(b'existing SR')
+         for name, component, setup, key, other, filename in self.component_upgrades():
+             with self.subTest(component=name):
+                 old = self.root / 'proton/components' / name / 'old'
+@@ -434,6 +437,7 @@ class OptiscalerTests(unittest.TestCase):
+         ini = self.destination / 'OptiScaler.ini'
+         manual = self.root / 'manual'
+         manual.mkdir()
++        (manual / 'nvngx_dlss.dll').write_bytes(b'manual SR')
+         for name, component, setup, key, other, filename in self.component_upgrades():
+             for bundled in ((False, True) if name != 'dlss' else (False,)):
+                 with self.subTest(component=name, bundled=bundled):
+@@ -580,25 +584,45 @@ class OptiscalerTests(unittest.TestCase):
+             setup.assert_not_called()
+             self.assertNotIn('WINE_UPSCALER_REPLACE', env)
+ 
+-    def test_optiscaler_dlss_uses_shared_paths_without_copying(self):
+-        from upscalers import dlss, progress
++    def test_stable_and_nightly_discover_dlss_without_game_upgrades(self):
++        from upscalers import dlss
+         shared = self.root / 'shared DLSS'
+         shared.mkdir()
+-        ini = self.destination / 'OptiScaler.ini'
+-        ini.write_text('[Libraries]\n; keep comment\nNvngxDlssPath=auto\nNvngxFeaturePath=auto\n')
++        (shared / 'nvngx_dlss.dll').write_bytes(b'signed SR fixture')
++        target = self.destination / 'nvngx_dlss.dll'
++        archive, item = self.stable_archive()
++        game = self.root / 'game'
++        game.mkdir()
++        env = {'STEAM_COMPAT_INSTALL_PATH': str(game), 'PROTON_UPSCALER_UPGRADE': '0'}
++        self.dlss_setup.side_effect = optiscaler_dlss_setup
+         with mock.patch.object(dlss, 'prepare', return_value=shared) as prepare, \
+-                mock.patch.object(progress, 'Progress'):
+-            optiscaler_dlss_setup({'PROTON_UPSCALER_UPGRADE': '1'}, self.compat, self.prefix)
+-        expected = r'\\?\unix' + str(shared).replace('/', '\\')
+-        parser = nightly.configparser.ConfigParser(interpolation=None)
+-        parser.read(ini)
+-        self.assertEqual(parser['Libraries']['NvngxDlssPath'], expected)
+-        self.assertEqual(parser['Libraries']['NvngxFeaturePath'], expected)
+-        self.assertIn('; keep comment', ini.read_text())
+-        self.assertFalse(list(self.destination.rglob('nvngx_dlss*.dll')))
+-        prepare.assert_called_once()
+-
+-    def test_streamline_setup_uses_configured_shared_dlss_without_prefix_files(self):
++                mock.patch.object(upscalers, '__get_opti_files', return_value=(nightly.ROOT, item)), \
++                mock.patch.object(upscalers, '__cached_download', side_effect=lambda _, target:
++                                  (target.parent.mkdir(parents=True, exist_ok=True),
++                                   target.write_bytes(archive.read_bytes()))), \
++                mock.patch.object(nightly, 'resolve', return_value=self.item), \
++                mock.patch.object(nightly, 'prepare', side_effect=self.package):
++            for channel in ('1', 'nightly'):
++                env['PROTON_USE_OPTISCALER'] = channel
++                upscalers.setup_upscalers({'optiscaler'}, env, self.compat, self.prefix)
++                self.assertEqual(env['WINE_OPTISCALER_NAME'], 'dxgi.dll')
++                self.assertNotIn('WINE_DLSS_PROVIDER', env)
++                self.assertNotIn('WINE_UPSCALER_REPLACE', env)
++                self.assertEqual(target.read_bytes(), b'signed SR fixture')
++                self.assertFalse(target.is_symlink())
++                self.assertFalse(target.samefile(shared / target.name))
++                self.assertEqual(list(self.prefix.rglob('nvngx_dlss*.dll')), [target])
++                ini = self.destination / 'OptiScaler.ini'
++                parser = nightly.configparser.ConfigParser(interpolation=None)
++                parser.read(ini)
++                expected = r'\\?\unix' + str(shared).replace('/', '\\')
++                self.assertEqual(parser['Libraries']['NvngxDlssPath'], expected + r'\nvngx_dlss.dll')
++                self.assertEqual(parser['Libraries']['NvngxFeaturePath'], expected)
++                self.assertIn('; Library location', ini.read_text())
++            self.assertEqual(prepare.call_count, 2)
++            self.assertEqual(list(game.iterdir()), [])
++
++    def test_streamline_and_prefix_detection_share_the_selected_dlss_runtime(self):
+         from upscalers import dlss, progress
+         shared = self.root / 'shared DLSS'
+         shared.mkdir()
+@@ -623,7 +647,7 @@ class OptiscalerTests(unittest.TestCase):
+         parser.read(ini)
+         self.assertEqual(parser['Libraries']['NvngxFeaturePath'],
+                          r'\\?\unix' + str(shared).replace('/', '\\'))
+-        self.assertFalse(list(self.destination.rglob('nvngx_dlss*.dll')))
++        self.assertEqual(list(self.destination.rglob('nvngx_dlss*.dll')), [self.destination / 'nvngx_dlss.dll'])
+         self.assertTrue(all((shared / name).read_bytes() == b'shared runtime'
+                             for name in upscalers.streamline.DLSS))
+ 
+@@ -632,6 +656,7 @@ class OptiscalerTests(unittest.TestCase):
+         ini = self.destination / 'OptiScaler.ini'
+         original = '[Libraries]\nNvngxDlssPath=C:\\custom\\dlss.dll\nNvngxFeaturePath=C:\\custom\n'
+         ini.write_text(original)
++        (self.destination / 'nvngx_dlss.dll').write_bytes(b'existing SR')
+         env = {'DXVK_NVAPI_DRS_SETTINGS': 'custom=123'}
+         with mock.patch.object(dlss, 'prepare') as prepare, mock.patch.object(progress, 'Progress'):
+             optiscaler_dlss_setup(env, self.compat, self.prefix)
+@@ -642,6 +667,7 @@ class OptiscalerTests(unittest.TestCase):
+     def test_optiscaler_dlss_keeps_mixed_custom_and_automatic_paths(self):
+         from upscalers import dlss
+         ini = self.destination / 'OptiScaler.ini'
++        (self.destination / 'nvngx_dlss.dll').write_bytes(b'existing SR')
+         for values in ((r'C:\custom\dlss.dll', 'auto'), ('auto', r'C:\custom')):
+             original = '[Libraries]\nNvngxDlssPath=' + values[0] + '\nNvngxFeaturePath=' + values[1] + '\n'
+             ini.write_text(original)
+@@ -650,11 +676,114 @@ class OptiscalerTests(unittest.TestCase):
+             self.assertEqual(ini.read_text(), original)
+             prepare.assert_not_called()
+ 
++    def test_dlss_probe_refreshes_owned_file_and_rolls_back_failed_update(self):
++        from upscalers import dlss
++        ini = self.destination / 'OptiScaler.ini'
++        ini.write_bytes(INI)
++        name = 'nvngx_dlss.dll'
++        self.dependency_files('dlss_files', {name: b'old standalone SR', 'nvngx_dlssd.dll': b'original RR'})
++        target = self.destination / name
++        old, new = self.root / '1', self.root / '2'
++        for directory in (old, new):
++            directory.mkdir()
++            (directory / name).write_bytes(directory.name.encode())
++        with mock.patch.object(dlss, 'prepare', return_value=old):
++            optiscaler_dlss_setup({}, self.compat, self.prefix)
++            self.assertEqual(target.read_bytes(), b'1')
++            before = self.snapshot()
++            with mock.patch.object(upscalers.shutil, 'copyfile', side_effect=AssertionError) as copy:
++                optiscaler_dlss_setup({}, self.compat, self.prefix)
++                copy.assert_not_called()
++        with mock.patch.object(dlss, 'prepare', return_value=new):
++            with mock.patch.object(upscalers, '__set_tracked_items', side_effect=OSError('disk full')):
++                optiscaler_dlss_setup({}, self.compat, self.prefix)
++            self.assertEqual(self.snapshot(), before)
++            optiscaler_dlss_setup({}, self.compat, self.prefix)
++        self.assertEqual(target.read_bytes(), b'2')
++        self.assertEqual((self.destination / 'nvngx_dlssd.dll').read_bytes(), b'original RR')
++
++    def test_dlss_probe_preserves_unowned_and_modified_prefix_files(self):
++        from upscalers import dlss
++        name = 'nvngx_dlss.dll'
++        ini = self.destination / 'OptiScaler.ini'
++        ini.write_bytes(INI)
++        shared = self.root / 'shared'
++        shared.mkdir()
++        (shared / name).write_bytes(b'signed SR')
++        target = self.destination / name
++        custom = self.root / 'user.dll'
++        custom.write_bytes(b'user SR')
++        with mock.patch.object(dlss, 'prepare', return_value=shared):
++            target.symlink_to(custom)
++            optiscaler_dlss_setup({}, self.compat, self.prefix)
++            self.assertTrue(target.is_symlink())
++            self.assertEqual(custom.read_bytes(), b'user SR')
++            target.unlink()
++            upper = self.destination / name.upper()
++            upper.write_bytes(b'custom uppercase DLL')
++            optiscaler_dlss_setup({}, self.compat, self.prefix)
++            self.assertFalse(target.exists())
++            upper.rename(target)
++            optiscaler_dlss_setup({}, self.compat, self.prefix)
++            self.assertEqual(target.read_bytes(), b'custom uppercase DLL')
++            self.dependency_files('dlss_files', {name: b'originally managed'})
++            target.write_bytes(b'user edit')
++            optiscaler_dlss_setup({}, self.compat, self.prefix)
++            self.assertEqual(target.read_bytes(), b'user edit')
++
++    def test_dlss_keeps_the_probe_when_switching_to_custom_paths(self):
++        from upscalers import dlss
++        ini = self.destination / 'OptiScaler.ini'
++        shared = self.root / 'shared'
++        shared.mkdir()
++        (shared / 'nvngx_dlss.dll').write_bytes(b'signed SR')
++        target = self.destination / 'nvngx_dlss.dll'
++        for modified in (False, True):
++            ini.write_bytes(INI)
++            with mock.patch.object(dlss, 'prepare', return_value=shared):
++                optiscaler_dlss_setup({}, self.compat, self.prefix)
++            self.assertEqual(target.read_bytes(), b'signed SR')
++            tracking = self.compat / 'upscaler_files'
++            records = tracking.read_bytes()
++            if modified:
++                target.write_bytes(b'private SR')
++            ini.write_bytes(nightly.update_ini(ini.read_bytes(), {('Libraries', 'OptiDllPath'): r'C:\private'}))
++            with mock.patch.object(dlss, 'prepare') as prepare:
++                optiscaler_dlss_setup({}, self.compat, self.prefix)
++                prepare.assert_not_called()
++            self.assertIn(r'OptiDllPath=C:\private', ini.read_text())
++            self.assertIn('NvngxDlssPath=auto', ini.read_text())
++            self.assertIn('NvngxFeaturePath=auto', ini.read_text())
++            self.assertEqual(target.read_bytes(), b'private SR' if modified else b'signed SR')
++            self.assertEqual(tracking.read_bytes(), records)
++
++    def test_fresh_custom_dlss_paths_provision_the_probe_without_rewriting_ini(self):
++        from upscalers import dlss
++        ini = self.destination / 'OptiScaler.ini'
++        shared = self.root / 'shared'
++        shared.mkdir()
++        (shared / 'nvngx_dlss.dll').write_bytes(b'signed SR')
++        target = self.destination / 'nvngx_dlss.dll'
++        for key, value in (('NvngxDlssPath', 'auto'), ('NvngxFeaturePath', r'C:\custom'),
++                           ('OptiDllPath', r'C:\custom')):
++            with self.subTest(key=key):
++                target.unlink(missing_ok=True)
++                original = f'[Libraries]\n{key}={value}\n'.encode()
++                ini.write_bytes(original)
++                env = {'PROTON_OPTISCALER_CONFIG': f'Libraries.{key}={value}'}
++                with mock.patch.object(dlss, 'prepare', return_value=shared) as prepare:
++                    optiscaler_dlss_setup(env, self.compat, self.prefix)
++                prepare.assert_called_once()
++                self.assertEqual(ini.read_bytes(), original)
++                self.assertEqual(target.read_bytes(), b'signed SR')
++
+     def test_optiscaler_dlss_updates_managed_and_legacy_paths(self):
+         from upscalers import dlss, progress
+         ini = self.destination / 'OptiScaler.ini'
+         old = self.root / 'proton/components/dlss/old'
+         new = self.root / 'proton/components/dlss/new'
++        new.mkdir(parents=True)
++        (new / 'nvngx_dlss.dll').write_bytes(b'new signed SR')
+         ini.write_text('[Libraries]\nNvngxDlssPath=' + r'\\?\unix' + str(old).replace('/', '\\') +
+                        '\nNvngxFeaturePath=C:\\windows\\system32\\umu\n')
+         with mock.patch.object(dlss, 'prepare', return_value=new), mock.patch.object(progress, 'Progress'):
+@@ -688,7 +817,10 @@ class OptiscalerTests(unittest.TestCase):
+         for name in ('nvngx_dlss.dll', 'nvngx_dlssd.dll', 'nvngx_dlssg.dll'):
+             records['opti_files'][f'{nightly.ROOT}/OptiScaler/{name}']['md5_hash'] = None
+         tracking.write_text(json.dumps(records))
+-        with mock.patch.object(dlss, 'prepare', return_value=self.root / 'shared'), \
++        shared = self.root / 'shared'
++        shared.mkdir()
++        (shared / 'nvngx_dlss.dll').write_bytes(b'new SR')
++        with mock.patch.object(dlss, 'prepare', return_value=shared), \
+                 mock.patch.object(progress, 'Progress'):
+             optiscaler_dlss_setup({'PROTON_UPSCALER_UPGRADE': '1'}, self.compat, self.prefix)
+         self.assertFalse(alias.is_symlink())
+@@ -970,7 +1102,7 @@ class OptiscalerTests(unittest.TestCase):
+         parser.read(stage / 'OptiScaler.ini')
+         self.assertIn('; Library location', (stage / 'OptiScaler.ini').read_text())
+         self.assertEqual(parser['Libraries']['OptiDllPath'], r'c:\windows\system32\umu\OptiScaler')
+-        self.assertEqual(parser['Libraries']['NvngxDlssPath'], r'c:\windows\system32\umu')
++        self.assertEqual(parser['Libraries'].get('NvngxDlssPath', 'auto'), 'auto')
+         self.assertEqual(parser['Hotfix']['CheckForUpdate'], 'false')
+ 
+     def test_nightly_link_rejected_before_extraction(self):
+diff --git a/upscalers.py b/upscalers.py
+index 1dabd44..5f31eca 100644
+--- a/upscalers.py
++++ b/upscalers.py
+@@ -6,6 +6,7 @@ import hashlib
+ import json
+ import ntpath
+ import os
++import shutil
+ import tempfile
+ import urllib.request
+ from pathlib import Path
+@@ -431,61 +432,112 @@ def __prune_optiscaler_dlss_links(compat_dir, prefix_dir):
+                         lambda: __set_tracked_items(compat_dir, __opti_section, remaining))
+ 
+ 
++def __optiscaler_dlss_probe(compat_dir, destination, records, source, *, pinned=False):
++    """CheckUpscalerFiles searches beside the proxy for a signed SR DLL."""
++    name = 'nvngx_dlss.dll'
++    key = f'{nightly.ROOT}/{name}'
++    target = destination / name
++    record = records.get(key, {})
++    owned = ()
++    if os.path.lexists(target):
++        # An older Proton may already own this file through its DLSS downloader.
++        if target.is_symlink() or not target.is_file() or not record.get('md5_hash'):
++            return
++        # A verified release directory is immutable. A modified prefix file
++        # must also be left alone, so neither requires a rewrite on this launch.
++        if pinned and record.get('opti_source') == str(source):
++            return
++        current = nightly.file_hash(target, 'md5')
++        if current != record['md5_hash'].lower():
++            return
++        owned = (name,)
++    elif any(path.name.lower() == name for path in destination.iterdir()):
++        return  # Wine resolves filenames case-insensitively.
++    if owned and current == nightly.file_hash(source, 'md5') and record.get('opti_source') == str(source):
++        return
++    with tempfile.TemporaryDirectory(prefix='.dlss-stage-', dir=destination.parent) as tmp:
++        stage = Path(tmp)
++        shutil.copyfile(source, stage / name)
++        updated = {**records, key: {'version': source.parent.name, 'opti_source': str(source),
++                                    'md5_hash': nightly.file_hash(stage / name, 'md5')}}
++        nightly.install(stage, destination, owned, (name,),
++                        lambda: __set_tracked_items(compat_dir, 'dlss_files', updated))
++
++
+ def __setup_optiscaler_dlss(env, compat_dir, prefix_dir):
+-    """Point OptiScaler and its Streamline runtime at the shared DLSS files."""
++    """Provision OptiScaler input detection and configure the DLSS output paths."""
+     try:
+         from upscalers import dlss, progress
+         from upscalers.storage import data_home
+ 
+         with open(Path(compat_dir) / '.optiscaler.lock', 'a') as lock:
+             fcntl.flock(lock, fcntl.LOCK_EX)
+-            ini = Path(prefix_dir) / nightly.ROOT / 'OptiScaler.ini'
++            destination = Path(prefix_dir) / nightly.ROOT
++            ini = destination / 'OptiScaler.ini'
++            if destination.resolve() != Path(prefix_dir).resolve() / nightly.ROOT or ini.is_symlink():
++                raise ValueError('OptiScaler installation uses a redirected directory or INI')
+             original = ini.read_bytes()
+             parser = configparser.ConfigParser(interpolation=None)
+             parser.read_string(original.decode('utf-8-sig'))
+             libraries = parser['Libraries'] if parser.has_section('Libraries') else {}
++            try:
++                records = __get_tracked_items(compat_dir, 'dlss_files')
++            except (KeyError, FileNotFoundError):
++                records = {}
++            name = 'nvngx_dlss.dll'
+             shared = r'\\?\unix' + str(data_home(env) / 'proton/components/dlss').replace('/', '\\') + '\\'
+-            keys = ('NvngxDlssPath', 'NvngxFeaturePath')
+-            managed_keys = {key for key in keys
+-                            if libraries.get(key, '').startswith(shared)
+-                            and '\\' not in libraries[key][len(shared):]}
+-            if env.get('PROTON_UPSCALER_UPGRADE') != '1' and not env.get('WINE_DLSS_PROVIDER'):
+-                changes = {('Libraries', key): 'auto' for key in keys
+-                           if libraries.get(key, '').startswith(shared)
+-                           and '\\' not in libraries[key][len(shared):]}
+-                if changes:
+-                    nightly.atomic_write(ini, nightly.update_ini(original, changes))
+-                return
+-            options = []
+-            for key in keys:
++            previous = records.get(f'{nightly.ROOT}/{name}', {}).get('opti_source')
++            previous_path = r'\\?\unix' + previous.replace('/', '\\') if previous else ''
++            previous_dir = ntpath.dirname(previous_path)
++            manual = env.get('WINE_DLSS_PROVIDER')
++            manual_dir = r'\\?\unix' + str(Path(manual)).replace('/', '\\') if manual else ''
++            explicit = {part.partition('=')[0].lower() for part in env.get('PROTON_OPTISCALER_CONFIG', '').split(';')
++                        if '=' in part}
++            legacy = r'c:\windows\system32\umu'
++            managed = {}
++            main_path = ntpath.normcase(ntpath.normpath(libraries.get('OptiDllPath', 'auto').strip()))
++            custom = main_path not in ('.', 'auto', legacy, legacy + r'\optiscaler')
++            for key in ('NvngxDlssPath', 'NvngxFeaturePath'):
+                 value = libraries.get(key, 'auto').strip()
+-                managed = value.startswith(shared) and '\\' not in value[len(shared):]
+-                if (managed or value.lower() in ('', 'auto') or
+-                        ntpath.normcase(ntpath.normpath(value)) == ntpath.normcase(r'c:\windows\system32\umu')):
+-                    options.append(key)
++                if 'libraries.' + key.lower() in explicit:
++                    custom = True
++                    continue
++                if value.lower() in ('', 'auto'):
++                    continue
++                relative = value[len(shared):].split('\\') if value.startswith(shared) else []
++                selected = {previous_dir, manual_dir}
++                if key == 'NvngxDlssPath':
++                    selected.update((previous_path, ntpath.join(manual_dir, name) if manual_dir else ''))
++                if (ntpath.normcase(ntpath.normpath(value)) == legacy or value in selected or
++                        (relative and relative[0] not in ('', '.', '..') and
++                         (len(relative) == 1 or (key == 'NvngxDlssPath' and relative[1:] == [name])))):
++                    managed['Libraries', key] = 'auto'
+                 else:
+-                    if managed_keys and not env.get('WINE_DLSS_PROVIDER'):
+-                        changes = {('Libraries', key): 'auto' for key in managed_keys}
+-                        nightly.atomic_write(ini, nightly.update_ini(original, changes))
+-                    return
+-            try:
+-                with progress.Progress(log=log.info) as reporter:
+-                    directory = dlss.prepare(env, reporter.update)
+-            except Exception as error:
+-                if env.get('WINE_DLSS_PROVIDER'):
+-                    raise
+-                log.warn(f'No verified OptiScaler DLSS update available: {error}')
+-                changes = {('Libraries', key): 'auto' for key in options
+-                           if libraries.get(key, '').startswith(shared)
+-                           and '\\' not in libraries[key][len(shared):]}
+-            else:
+-                path = r'\\?\unix' + str(directory).replace('/', '\\')
+-                changes = {('Libraries', key): path for key in options}
+-            updated = nightly.update_ini(original, changes)
+-            if updated != original:
+-                nightly.atomic_write(ini, updated)
+-            if changes.get(('Libraries', 'NvngxFeaturePath')) not in (None, 'auto'):
+-                __prune_optiscaler_dlss_links(compat_dir, prefix_dir)
++                    custom = True
++            changes = {} if custom and manual else managed
++            # OptiScaler checks beside the proxy even with custom DLSS paths.
++            if not custom or not os.path.lexists(destination / name):
++                try:
++                    with progress.Progress(log=log.info, component='NVIDIA DLSS') as reporter:
++                        directory = dlss.prepare(env, reporter.update, log=log.info)
++                    source = directory / name
++                    if not source.is_file():
++                        raise FileNotFoundError(source)
++                except Exception as error:
++                    if manual:
++                        raise
++                    log.warn(f'No verified OptiScaler DLSS runtime available: {error}')
++                else:
++                    __optiscaler_dlss_probe(compat_dir, destination, records, source, pinned=not manual)
++                    if not custom:
++                        path = r'\\?\unix' + str(directory).replace('/', '\\')
++                        changes = {('Libraries', 'NvngxDlssPath'): path + '\\' + name,
++                                   ('Libraries', 'NvngxFeaturePath'): path}
++                        __prune_optiscaler_dlss_links(compat_dir, prefix_dir)
++            if changes:
++                updated = nightly.update_ini(original, changes)
++                if updated != original:
++                    nightly.atomic_write(ini, updated)
+     except Exception as error:
+         log.warn(f'Keeping OptiScaler DLSS libraries: {error}')
+ 
