@@ -73,8 +73,9 @@ def setup(env, *, mode, command, gpu_query, log=print):
     if env.get("WINEARCH") == "win32" or platform.machine() not in ("x86_64", "amd64"):
         return False
     enabled = env.get("PROTON_UPSCALER_UPGRADE") == "1"
+    optiscaler = env.get("WINE_OPTISCALER_NAME")
     explicit_fsr = bool(env.get("WINE_FSR4_PROVIDER"))
-    if not enabled and not any(env.get(key) for key in (
+    if not enabled and not optiscaler and not any(env.get(key) for key in (
             "WINE_FSR4_PROVIDER", "WINE_FFX_PROVIDER", "WINE_DLSS_PROVIDER", "WINE_XESS_PROVIDER")):
         return False
     devices = None
@@ -92,6 +93,8 @@ def setup(env, *, mode, command, gpu_query, log=print):
                                        progress=reporter.update, log=log)
         if provider_ready and not explicit_fsr and "WINE_FSR4_LITE" not in env and default_amd_lite(gpus()):
             env["WINE_FSR4_LITE"] = "1"
+        if optiscaler:
+            return provider_ready
         if (provider_ready and enabled) or env.get("WINE_FFX_PROVIDER"):
             with progress.Progress(log=log) as reporter:
                 ffx.setup(env, progress=reporter.update, log=log)

@@ -121,8 +121,7 @@ class SdkFallback(unittest.TestCase):
         previous = self.install(xess, data, payloads)
         self.env['PROTON_UPSCALER_UPGRADE'] = '0'
         with mock.patch.object(xess, 'catalog', side_effect=AssertionError('manifest queried')):
-            with self.assertRaises(storage.ComponentError):
-                xess.prepare(self.env)
+            self.assertFalse(xess.setup(self.env, gpu_eligible=True))
             custom = self.root / 'custom'
             custom.mkdir()
             self.env['WINE_XESS_PROVIDER'] = str(custom)

@@ -1,0 +1,226 @@
+From: Erhan Bilgili <erhan.bilgili@gmail.com>
+Subject: [PATCH] upscalers: Restore OptiScaler output dependencies.
+
+---
+diff --git a/tests/test_optiscaler.py b/tests/test_optiscaler.py
+index 26f1d47..fa6603d 100644
+--- a/tests/test_optiscaler.py
++++ b/tests/test_optiscaler.py
+@@ -177,15 +177,17 @@ class OptiscalerTests(unittest.TestCase):
+         for record in records['opti_files'].values():
+             record['version'] = '0.9.0'
+         tracking.write_text(json.dumps(records))
+-        _, calls = self.run_upscalers()
++        env, calls = self.run_upscalers()
+         self.assertEqual(calls, [])
+-        self.assertNotIn('ffx3', [name for name, _ in calls])
++        self.sdk_setup.assert_called_once_with(env, self.compat, self.prefix, bundled=False)
++        self.xess_setup.assert_called_once_with(env, self.compat, self.prefix, bundled=False)
+ 
+     def test_nightly_fallback_to_stable_request_still_uses_bundled_dependencies(self):
+         self.bundled_dependencies()
+-        _, calls = self.run_upscalers(env={'PROTON_USE_OPTISCALER': '1'})
+-        self.assertNotIn('xess', [name for name, _ in calls])
+-        self.assertNotIn('ffx3', [name for name, _ in calls])
++        env, calls = self.run_upscalers(env={'PROTON_USE_OPTISCALER': '1'})
++        self.assertEqual(calls, [])
++        self.sdk_setup.assert_called_once_with(env, self.compat, self.prefix, bundled=True)
++        self.xess_setup.assert_called_once_with(env, self.compat, self.prefix, bundled=True)
+ 
+     def test_failed_optiscaler_preserves_previous_files_without_overrides(self):
+         self.bundled_dependencies()
+@@ -337,7 +339,7 @@ class OptiscalerTests(unittest.TestCase):
+                 value = r'\\?\unix' + str(path).replace('/', '\\')
+                 original = '[Libraries]\n; keep comment\n' + key + '=' + value + '\nUnrelated=C:\\custom\\runtime.dll\n'
+                 ini.write_text(original)
+-                env = {'XDG_DATA_HOME': str(self.root), 'PROTON_UPSCALER_UPGRADE': '1'}
++                env = {'XDG_DATA_HOME': str(self.root)}
+                 with mock.patch.object(component, 'prepare', side_effect=ComponentError('no verified cache')):
+                     setup(env, self.compat, self.prefix)
+                 self.assertIn(key + '=auto', ini.read_text())
+@@ -358,7 +360,7 @@ class OptiscalerTests(unittest.TestCase):
+                 path = old / filename if filename else old
+                 original = '[Libraries]\n; keep comment\n' + key + '=' + r'\\?\unix' + str(path).replace('/', '\\') + '\n' + other + '=C:\\custom\\runtime.dll\n'
+                 ini.write_text(original)
+-                env = {'XDG_DATA_HOME': str(self.root), 'PROTON_UPSCALER_UPGRADE': '1'}
++                env = {'XDG_DATA_HOME': str(self.root)}
+                 with mock.patch.object(component, 'prepare', side_effect=ComponentError('invalid managed cache')):
+                     setup(env, self.compat, self.prefix)
+                 self.assertIn(key + '=auto', ini.read_text())
+@@ -383,7 +385,7 @@ class OptiscalerTests(unittest.TestCase):
+                     item.update(size=len(payload), sha256=hashlib.sha256(payload).hexdigest())
+                 def download(item, target, *args, **kwargs):
+                     Path(target).write_bytes(Path(target).name.encode())
+-                env = {'XDG_DATA_HOME': str(self.root), 'PROTON_UPSCALER_UPGRADE': '1'}
++                env = {'XDG_DATA_HOME': str(self.root)}
+                 with mock.patch.object(component, 'catalog', return_value=manifest), \
+                         mock.patch.object(storage, 'download_file', side_effect=download):
+                     old = component.prepare(env)
+@@ -396,21 +398,20 @@ class OptiscalerTests(unittest.TestCase):
+                 self.assertIn(key + '=' + r'\\?\unix' + str(expected).replace('/', '\\'), ini.read_text())
+                 self.assertNotIn('2.0', ini.read_text())
+ 
+-    def test_default_leaves_fresh_and_custom_ini_untouched(self):
++    def test_custom_main_library_directory_supplies_automatic_slots(self):
+         ini = self.destination / 'OptiScaler.ini'
++        (self.destination / 'nvngx_dlss.dll').write_bytes(b'existing SR')
+         for name, component, setup, key, other, filename in self.component_upgrades():
+-            if name == 'dlss':
+-                continue  # The SR library is also required for OptiScaler input detection.
+             for value in ('auto', r'C:\custom\runtime.dll'):
+                 with self.subTest(component=name, value=value):
+-                    original = '[Libraries]\n; keep comment\n' + key + '=' + value + '\n'
++                    original = '[Libraries]\nOptiDllPath=C:\\custom\n' + key + '=' + value + '\n'
+                     ini.write_text(original)
+                     with mock.patch.object(component, 'prepare') as prepare:
+                         setup({}, self.compat, self.prefix)
+                     prepare.assert_not_called()
+                     self.assertEqual(ini.read_text(), original)
+ 
+-    def test_disabled_component_upgrades_reset_only_managed_paths(self):
++    def test_custom_main_library_path_resets_only_managed_paths(self):
+         ini = self.destination / 'OptiScaler.ini'
+         (self.destination / 'nvngx_dlss.dll').write_bytes(b'existing SR')
+         for name, component, setup, key, other, filename in self.component_upgrades():
+@@ -420,7 +421,7 @@ class OptiscalerTests(unittest.TestCase):
+                 path = old / filename if filename else old
+                 if filename:
+                     path.write_bytes(b'old runtime')
+-                ini.write_text('[Libraries]\n; keep comment\n' + key + '=' + r'\\?\unix' +
++                ini.write_text('[Libraries]\nOptiDllPath=C:\\custom\n; keep comment\n' + key + '=' + r'\\?\unix' +
+                                str(path).replace('/', '\\') + '\n' + other + '=C:\\custom\\runtime.dll\n')
+                 env = {'PROTON_UPSCALER_UPGRADE': '0', 'XDG_DATA_HOME': str(self.root)}
+                 with mock.patch.object(component, 'prepare') as prepare:
+@@ -428,6 +429,7 @@ class OptiscalerTests(unittest.TestCase):
+                 prepare.assert_not_called()
+                 text = ini.read_text()
+                 self.assertIn(key + '=auto', text)
++                self.assertIn('OptiDllPath=C:\\custom', text)
+                 self.assertIn(other + '=C:\\custom\\runtime.dll', text)
+                 self.assertIn('; keep comment', text)
+                 self.assertTrue(path.exists())
+@@ -441,7 +443,8 @@ class OptiscalerTests(unittest.TestCase):
+         for name, component, setup, key, other, filename in self.component_upgrades():
+             for bundled in ((False, True) if name != 'dlss' else (False,)):
+                 with self.subTest(component=name, bundled=bundled):
+-                    ini.write_text('[Libraries]\n' + key + '=auto\n')
++                    main = 'auto' if name == 'dlss' else r'C:\custom'
++                    ini.write_text('[Libraries]\nOptiDllPath=' + main + '\n' + key + '=auto\n')
+                     env = {'PROTON_UPSCALER_UPGRADE': '0',
+                            'WINE_' + name.upper() + '_PROVIDER': str(manual)}
+                     kwargs = {'bundled': bundled} if name != 'dlss' else {}
+@@ -462,6 +465,38 @@ class OptiscalerTests(unittest.TestCase):
+         self.dlss_setup.assert_called_once()
+         self.xess_setup.assert_called_once()
+ 
++    def test_stable_configures_output_libraries_with_game_upgrades_off(self):
++        from upscalers import ffx, xess
++        ini = self.destination / 'OptiScaler.ini'
++        sdk = self.root / 'SDK'
++        intel = self.root / 'XeSS'
++        defaults = r'OptiDllPath = c:\windows\system32\umu'
++        libraries = {
++            'FfxDx12Path': sdk / 'amd_fidelityfx_dx12.dll',
++            'FfxVkPath': sdk / 'amd_fidelityfx_vk.dll',
++            'XeSSPath': intel / 'libxess.dll',
++            'XeSSDx11Path': intel / 'libxess_dx11.dll',
++            'XeFGPath': intel / 'libxess_fg.dll',
++            'XeLLPath': intel / 'libxell.dll',
++        }
++        self.sdk_setup.side_effect = optiscaler_ffx_setup
++        self.xess_setup.side_effect = optiscaler_xess_setup
++        for settings in ({}, {'PROTON_UPSCALER_UPGRADE': '0'}):
++            with self.subTest(settings=settings):
++                ini.write_text('[Libraries]\n' + defaults + '\n' +
++                               ''.join(key + '=auto\n' for key in libraries))
++                with mock.patch.object(ffx, 'prepare', return_value=sdk) as prepare_sdk, \
++                        mock.patch.object(xess, 'prepare', return_value=intel) as prepare_xess:
++                    env, _ = self.run_upscalers(env={'PROTON_USE_OPTISCALER': '1', **settings})
++                text = ini.read_text()
++                self.assertIn(defaults, text)
++                for key, path in libraries.items():
++                    self.assertIn(key + '=' + r'\\?\unix' + str(path).replace('/', '\\'), text)
++                prepare_sdk.assert_called_once()
++                prepare_xess.assert_called_once()
++                self.assertEqual(env, {'PROTON_USE_OPTISCALER': '1',
++                                       'WINE_OPTISCALER_NAME': 'dxgi.dll', **settings})
++
+     def test_stable_xess_uses_one_shared_directory_without_prefix_copies(self):
+         from upscalers import xess, progress
+         shared = self.root / 'shared XeSS'
+@@ -470,7 +505,7 @@ class OptiscalerTests(unittest.TestCase):
+         ini.write_text('[Libraries]\n; keep comment\nXeSSPath=auto\n')
+         with mock.patch.object(xess, 'prepare', return_value=shared) as prepare, \
+                 mock.patch.object(progress, 'Progress'):
+-            optiscaler_xess_setup({'PROTON_UPSCALER_UPGRADE': '1'}, self.compat, self.prefix)
++            optiscaler_xess_setup({}, self.compat, self.prefix)
+         text = ini.read_text()
+         for key, name in {'XeSSPath': 'libxess.dll', 'XeSSDx11Path': 'libxess_dx11.dll',
+                           'XeFGPath': 'libxess_fg.dll', 'XeLLPath': 'libxell.dll'}.items():
+@@ -536,7 +571,7 @@ class OptiscalerTests(unittest.TestCase):
+         ini.write_text('[Libraries]\n; keep this\nFfxDx12Path=auto\nFfxVkPath=C:\\custom\\vk.dll\n')
+         with mock.patch.object(ffx, 'prepare', return_value=shared) as prepare, \
+                 mock.patch.object(progress, 'Progress'):
+-            optiscaler_ffx_setup({'PROTON_UPSCALER_UPGRADE': '1'}, self.compat, self.prefix)
++            optiscaler_ffx_setup({}, self.compat, self.prefix)
+         self.assertIn('FfxDx12Path=\\\\?\\unix' + str(shared / 'amd_fidelityfx_dx12.dll').replace('/', '\\'), ini.read_text())
+         self.assertIn('FfxVkPath=C:\\custom\\vk.dll', ini.read_text())
+         self.assertIn('; keep this', ini.read_text())
+diff --git a/upscalers.py b/upscalers.py
+index 5f31eca..38b0af2 100644
+--- a/upscalers.py
++++ b/upscalers.py
+@@ -368,6 +368,11 @@ def __prune_optiscaler_xess(compat_dir, prefix_dir):
+         log.warn(f'Keeping standalone XeSS files: {error}')
+ 
+ 
++def __custom_optiscaler_library_path(libraries):
++    path = ntpath.normcase(ntpath.normpath(libraries.get('OptiDllPath', 'auto').strip()))
++    return path not in ('.', 'auto', r'c:\windows\system32\umu', r'c:\windows\system32\umu\optiscaler')
++
++
+ def __setup_optiscaler_ffx(env, compat_dir, prefix_dir, *, bundled=False):
+     """Stable OptiScaler releases use the shared SDK instead of prefix copies."""
+     try:
+@@ -386,7 +391,7 @@ def __setup_optiscaler_ffx(env, compat_dir, prefix_dir, *, bundled=False):
+             managed = {key for key, name in options.items()
+                        if libraries.get(key, '').startswith(shared)
+                        and libraries[key][len(shared):].split('\\')[1:] == [name]}
+-            if (bundled or env.get('PROTON_UPSCALER_UPGRADE') != '1') and not env.get('WINE_FFX_PROVIDER'):
++            if (bundled or __custom_optiscaler_library_path(libraries)) and not env.get('WINE_FFX_PROVIDER'):
+                 changes = {('Libraries', key): 'auto' for key in managed}
+             else:
+                 options = {key: name for key, name in options.items()
+@@ -404,9 +409,10 @@ def __setup_optiscaler_ffx(env, compat_dir, prefix_dir, *, bundled=False):
+                 else:
+                     changes = {('Libraries', key): r'\\?\unix' + str(directory / name).replace('/', '\\')
+                                for key, name in options.items()}
+-            if not changes:
+-                return
+-            nightly.atomic_write(ini, nightly.update_ini(original, changes))
++            if changes:
++                updated = nightly.update_ini(original, changes)
++                if updated != original:
++                    nightly.atomic_write(ini, updated)
+     except Exception as error:
+         log.warn(f'Keeping OptiScaler FidelityFX libraries: {error}')
+ 
+@@ -495,8 +501,7 @@ def __setup_optiscaler_dlss(env, compat_dir, prefix_dir):
+                         if '=' in part}
+             legacy = r'c:\windows\system32\umu'
+             managed = {}
+-            main_path = ntpath.normcase(ntpath.normpath(libraries.get('OptiDllPath', 'auto').strip()))
+-            custom = main_path not in ('.', 'auto', legacy, legacy + r'\optiscaler')
++            custom = __custom_optiscaler_library_path(libraries)
+             for key in ('NvngxDlssPath', 'NvngxFeaturePath'):
+                 value = libraries.get(key, 'auto').strip()
+                 if 'libraries.' + key.lower() in explicit:
+@@ -561,7 +566,7 @@ def __setup_optiscaler_xess(env, compat_dir, prefix_dir, *, bundled=False):
+             managed = {key for key, name in options.items()
+                        if libraries.get(key, '').startswith(shared)
+                        and libraries[key][len(shared):].split('\\')[1:] == [name]}
+-            if (bundled or env.get('PROTON_UPSCALER_UPGRADE') != '1') and not env.get('WINE_XESS_PROVIDER'):
++            if (bundled or __custom_optiscaler_library_path(libraries)) and not env.get('WINE_XESS_PROVIDER'):
+                 changes = {('Libraries', key): 'auto' for key in managed}
+             else:
+                 for key, name in options.items():

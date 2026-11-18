@@ -9,11 +9,12 @@ from unittest import mock
 
 from proton_config import Settings
 import upscalers
-from upscalers import dlss, ffx, fsr, storage, xess
+from upscalers import dlss, ffx, fsr, xess
 
 
 ROOT = Path(__file__).resolve().parents[1]
 dlss_setup = dlss.setup
+ffx_setup = ffx.setup
 xess_setup = xess.setup
 
 
@@ -388,19 +389,42 @@ class LauncherIntegration(unittest.TestCase):
         self.assertFalse(upscalers.default_amd_lite([
             integrated, gpu(0x1002, "VK_EXT_shader_float8", kind="INTEGRATED_GPU")]))
 
-    def test_component_entry_points_require_opt_in_but_accept_explicit_overrides(self):
-        disabled = {}
+    def test_standalone_setup_requires_opt_in_and_explicit_providers_work_without_it(self):
         directory = self.root / "manual provider"
         directory.mkdir()
-        # prepare() is also used directly by OptiScaler.
-        for component, key in ((xess, "WINE_XESS_PROVIDER"), (ffx, "WINE_FFX_PROVIDER")):
+        for component, key in ((dlss, "WINE_DLSS_PROVIDER"), (ffx, "WINE_FFX_PROVIDER"),
+                               (xess, "WINE_XESS_PROVIDER")):
             with self.subTest(component=key), mock.patch.object(component, "prepare_libraries") as prepare:
-                with self.assertRaises(storage.ComponentError):
-                    component.prepare(disabled)
-                self.assertEqual(component.prepare({**disabled, key: str(directory)}), directory)
+                self.assertEqual(component.prepare({key: str(directory)}), directory)
                 prepare.assert_not_called()
         for setup in (fsr.setup, dlss_setup, xess_setup):
-            self.assertFalse(setup(disabled, gpu_eligible=lambda: self.fail("GPU queried")))
+            self.assertFalse(setup({}, gpu_eligible=lambda: self.fail("GPU queried")))
+        self.assertFalse(ffx_setup({}))
+
+    def test_active_optiscaler_uses_only_the_amd_driver_provider(self):
+        for upgrade in (None, "0", "1"):
+            for eligible in (False, True):
+                with self.subTest(upgrade=upgrade, eligible=eligible):
+                    self.env.pop("PROTON_UPSCALER_UPGRADE", None)
+                    self.env.pop("WINE_FSR4_PROVIDER", None)
+                    self.env["WINE_OPTISCALER_NAME"] = "dxgi.dll"
+                    if upgrade is not None:
+                        self.env["PROTON_UPSCALER_UPGRADE"] = upgrade
+                    self.query.return_value = [gpu(0x1002 if eligible else 0x10de, "VK_KHR_fragment_shading_rate")]
+                    with mock.patch.object(fsr, "Store") as store:
+                        store.return_value.prepare.return_value = self.cached_provider()
+                        self.assertEqual(self.run_setup(), eligible)
+                        self.assertEqual(store.called, eligible)
+                    self.assertEqual("WINE_FSR4_PROVIDER" in self.env, eligible)
+        self.sdk.assert_not_called()
+        self.dlss.assert_not_called()
+        self.xess.assert_not_called()
+
+    def test_optiscaler_request_without_an_active_proxy_does_not_enable_upgrades(self):
+        del self.env["PROTON_UPSCALER_UPGRADE"]
+        self.env["PROTON_USE_OPTISCALER"] = "1"
+        self.assertFalse(self.run_setup())
+        self.query.assert_not_called()
 
     def test_old_add_config_aliases_do_not_set_upgrade_flags(self):
         tree = ast.parse((ROOT / "utilities.py").read_text())

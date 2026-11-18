@@ -41,13 +41,13 @@ def prepare(env, progress=None, *, log=print):
     override = directory_override(env, "WINE_FFX_PROVIDER")
     if override:
         return override
-    if env.get("PROTON_UPSCALER_UPGRADE") != "1":
-        raise ComponentError("Automatic component upgrades are disabled")
     return prepare_libraries(env, "ffx", catalog(), progress, log=log)
 
 
 def setup(env, *, progress=None, log=print):
     if env.get("WINE_OPTISCALER_NAME"):
+        return False
+    if not env.get("WINE_FFX_PROVIDER") and env.get("PROTON_UPSCALER_UPGRADE") != "1":
         return False
     try:
         directory = prepare(env, progress, log=log)

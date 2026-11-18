@@ -71,7 +71,7 @@ def setup(env, *, gpu_eligible, progress=None, log=print):
             protect_managed(env, "fsr", provider)
             _activate(env, provider)
             return True
-        if env.get("PROTON_UPSCALER_UPGRADE") != "1":
+        if env.get("PROTON_UPSCALER_UPGRADE") != "1" and not env.get("WINE_OPTISCALER_NAME"):
             return False
         if not (gpu_eligible() if callable(gpu_eligible) else gpu_eligible):
             return False

@@ -409,10 +409,18 @@ are installed under `umu/OptiScaler/streamline` and use the shared DLSS
 directory directly. Private nightly libraries stay
 under `OptiScaler`. The entry DLL and INI stay in `umu`.
 
-Nightlies use their bundled XeSS and FidelityFX libraries instead of fetching
-extra standalone copies. Stable releases use shared XeSS libraries. Existing
-installer-owned duplicates are removed only when unchanged. Modified files
-and custom library paths are preserved.
+Enabling OptiScaler also prepares its dependencies, even when
+`PROTON_UPSCALER_UPGRADE` is off. Stable releases use the shared XeSS and
+FidelityFX libraries. Nightlies use their bundled versions. On compatible AMD
+GPUs both can use the shared FSR 4 driver provider. Custom library paths are
+preserved.
+
+With an empty component cache, the default stable setup downloads about
+400 MB of shared libraries. A nightly downloads about 115 MB of shared DLSS
+libraries, in addition to the OptiScaler and Streamline archives. On compatible
+AMD GPUs, the FSR 4 provider adds about 470 MB with partial downloads or about
+1 GB if the full driver archive is needed. The DLSS discovery file uses about
+59 MB per OptiScaler prefix.
 
 The first Streamline download is the full SDK archive (currently about 276
 MB). The installed runtime is about 10 MB. Downloads are verified and cached,
