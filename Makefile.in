@@ -885,6 +885,39 @@ $(eval $(call rules-source,piper,$(SRCDIR)/piper))
 $(eval $(call rules-cmake,piper,x86_64,unix))
 $(eval $(call rules-cmake,piper,aarch64,unix))
 
+ONNXRUNTIME_VER := 1.14.1
+ONNXRUNTIME_NUPKG := microsoft.ml.onnxruntime.$(ONNXRUNTIME_VER).nupkg
+ONNXRUNTIME_NUPKG_URL := https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/$(ONNXRUNTIME_VER)/$(ONNXRUNTIME_NUPKG)
+ONNXRUNTIME_NUPKG_SHA256 := 3a277421efce94b5f91f4a5dc8efc1add99b4c01f547279d81098ffb4fafbb6d
+ONNXRUNTIME_x86_64_RID := linux-x64
+ONNXRUNTIME_aarch64_RID := linux-arm64
+
+PIPER_x86_64_CMAKE_ARGS = -DONNXRUNTIME_DIR=$(OBJ)/onnxruntime-x86_64
+PIPER_aarch64_CMAKE_ARGS = -DONNXRUNTIME_DIR=$(OBJ)/onnxruntime-aarch64
+
+$(SRC)/contrib/$(ONNXRUNTIME_NUPKG):
+	mkdir -p $(dir $@)
+	wget --no-use-server-timestamps -O $@.tmp $(ONNXRUNTIME_NUPKG_URL) || (rm -f $@.tmp; false)
+	echo "$(ONNXRUNTIME_NUPKG_SHA256)  $@.tmp" | sha256sum -c - || (rm -f $@.tmp; false)
+	mv $@.tmp $@
+
+$(OBJ)/.onnxruntime-%-unpack: $(SRC)/contrib/$(ONNXRUNTIME_NUPKG)
+	rm -rf $(OBJ)/onnxruntime-$*
+	mkdir -p $(OBJ)/onnxruntime-$*/include $(OBJ)/onnxruntime-$*/lib
+	unzip -j $< 'build/native/include/*.h' -d $(OBJ)/onnxruntime-$*/include
+	sed -i 's/\r$$//' $(OBJ)/onnxruntime-$*/include/*.h
+	unzip -j $< runtimes/$(ONNXRUNTIME_$*_RID)/native/libonnxruntime.so -d $(OBJ)/onnxruntime-$*/lib
+	mv $(OBJ)/onnxruntime-$*/lib/libonnxruntime.so $(OBJ)/onnxruntime-$*/lib/libonnxruntime.so.$(ONNXRUNTIME_VER)
+	ln -s libonnxruntime.so.$(ONNXRUNTIME_VER) $(OBJ)/onnxruntime-$*/lib/libonnxruntime.so
+	touch $@
+
+$(OBJ)/.piper-x86_64-configure: $(OBJ)/.onnxruntime-x86_64-unpack
+$(OBJ)/.piper-aarch64-configure: $(OBJ)/.onnxruntime-aarch64-unpack
+
+$(OBJ)/.piper-post-source: patches-source
+	$(foreach p,$(sort $(wildcard $(SRC)/patches/piper/*.patch)),patch -d $(PIPER_SRC) -Np1 -i $(PATCHES_SRC)/piper/$(notdir $(p)) &&) true
+	touch $@
+
 $(OBJ)/.piper-x86_64-post-build:
 	mkdir -p $(PIPER_x86_64_DST)/lib/$(x86_64-unix_TARGET)
 	mv $(PIPER_x86_64_DST)/*.so* $(PIPER_x86_64_DST)/lib/$(x86_64-unix_TARGET)

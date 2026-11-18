@@ -1,0 +1,19 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -62,11 +62,15 @@
+ 
+ if(NOT DEFINED PIPER_PHONEMIZE_DIR)
+   set(PIPER_PHONEMIZE_DIR "${CMAKE_CURRENT_BINARY_DIR}/pi")
++  set(PIPER_PHONEMIZE_CMAKE_ARGS -DCMAKE_INSTALL_PREFIX:PATH=${PIPER_PHONEMIZE_DIR})
++  if(DEFINED ONNXRUNTIME_DIR)
++    list(APPEND PIPER_PHONEMIZE_CMAKE_ARGS -DONNXRUNTIME_DIR:PATH=${ONNXRUNTIME_DIR})
++  endif()
+   ExternalProject_Add(
+     piper_phonemize_external
+     PREFIX "${CMAKE_CURRENT_BINARY_DIR}/p"
+     URL "https://github.com/shaunren/piper-phonemize/archive/refs/heads/pic.zip"
+-    CMAKE_ARGS -DCMAKE_INSTALL_PREFIX:PATH=${PIPER_PHONEMIZE_DIR}
++    CMAKE_ARGS ${PIPER_PHONEMIZE_CMAKE_ARGS}
+   )
+   add_dependencies(piper piper_phonemize_external)
+   add_dependencies(test_piper piper_phonemize_external)
