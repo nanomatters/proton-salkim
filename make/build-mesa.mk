@@ -15,6 +15,7 @@ MESA_MESON_ARGS := \
 	-Dallow-fallback-for=libdrm \
 	-Db_lto=false -Db_ndebug=true \
 	-Dvulkan-drivers=amd -Dgallium-drivers= -Dplatforms=x11,wayland \
+	-Dvideo-codecs=all_free,h264dec,h265dec \
 	-Dllvm=disabled -Damd-options= \
 	-Dopengl=false -Dglx=disabled -Degl=disabled -Dgbm=disabled \
 	-Dgles1=disabled -Dgles2=disabled -Dxlib-lease=disabled \
