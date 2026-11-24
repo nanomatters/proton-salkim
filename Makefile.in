@@ -673,11 +673,23 @@ GST_LIBAV_MESON_ARGS := \
     -Ddoc=disabled \
 
 GST_LIBAV_DEPENDS = gst_orc gstreamer gst_base ffmpeg
+GST_LIBAV_VULKAN_PATCH := $(SRC)/patches/gst-libav/0001-vulkan-h264.patch
+GST_LIBAV_VIDEO_DECODER := ext/libav/gstavviddec.c
+GST_LIBAV_SOURCE_ARGS += --exclude=/$(GST_LIBAV_VIDEO_DECODER)
 
 $(eval $(call rules-source,gst_libav,$(SRCDIR)/gstreamer/subprojects/gst-libav))
 $(eval $(call rules-meson,gst_libav,i386,unix))
 $(eval $(call rules-meson,gst_libav,x86_64,unix))
 $(eval $(call rules-meson,gst_libav,aarch64,unix))
+
+$(GST_LIBAV_SRC)/$(GST_LIBAV_VIDEO_DECODER): $(GST_LIBAV_ORIGIN)/$(GST_LIBAV_VIDEO_DECODER) $(GST_LIBAV_VULKAN_PATCH) | $(OBJ)/.gst_libav-source
+	patch --batch --forward --fuzz=0 --reject-file=- -o "$@.tmp" "$<" < "$(GST_LIBAV_VULKAN_PATCH)"
+	mv "$@.tmp" "$@"
+
+$(OBJ)/.gst_libav-post-source: $(GST_LIBAV_SRC)/$(GST_LIBAV_VIDEO_DECODER)
+	touch "$@"
+
+$(foreach arch,$(unix_ARCHS),$(eval $(OBJ)/.gst_libav-$(arch)-build: $(OBJ)/.gst_libav-post-source))
 
 
 ##

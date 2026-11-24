@@ -1,0 +1,202 @@
+--- a/ext/libav/gstavviddec.c
++++ b/ext/libav/gstavviddec.c
+@@ -25,6 +25,7 @@
+ #include <string.h>
+
+ #include <libavcodec/avcodec.h>
++#include <libavutil/hwcontext.h>
+ #include <libavutil/stereo3d.h>
+ #include <libavutil/mastering_display_metadata.h>
+
+@@ -461,6 +462,34 @@
+   gst_buffer_replace (&ffmpegdec->palette, NULL);
+ }
+
++static void
++gst_ffmpegviddec_try_vulkan (GstFFMpegVidDec * ffmpegdec, const AVCodec * codec)
++{
++  AVCodecContext *context = ffmpegdec->context;
++  const AVCodecHWConfig *config;
++  gint i, ret;
++
++  if (codec->id != AV_CODEC_ID_H264 || context->lowres
++      || (context->flags2 & AV_CODEC_FLAG2_CHUNKS))
++    return;
++
++  for (i = 0; (config = avcodec_get_hw_config (codec, i)); i++) {
++    if (config->device_type == AV_HWDEVICE_TYPE_VULKAN
++        && (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX))
++      break;
++  }
++  if (!config)
++    return;
++
++  /* FFmpeg checks the video queue and stream profile during format
++   * selection, then retries in software if hardware setup fails. */
++  ret = av_hwdevice_ctx_create (&context->hw_device_ctx,
++      AV_HWDEVICE_TYPE_VULKAN, NULL, NULL, 0);
++  if (ret < 0)
++    GST_INFO_OBJECT (ffmpegdec, "Vulkan device unavailable: %s",
++        av_err2str (ret));
++}
++
+ /* with LOCK */
+ static gboolean
+ gst_ffmpegviddec_open (GstFFMpegVidDec * ffmpegdec)
+@@ -470,6 +499,7 @@
+
+   oclass = GST_FFMPEGVIDDEC_GET_CLASS (ffmpegdec);
+
++  gst_ffmpegviddec_try_vulkan (ffmpegdec, oclass->in_plugin);
+   if (gst_ffmpeg_avcodec_open (ffmpegdec->context, oclass->in_plugin) < 0)
+     goto could_not_open;
+
+@@ -1038,7 +1068,8 @@
+ {
+   GstFFMpegVidDecClass *oclass;
+
+-  if (!ffmpegdec->direct_rendering)
++  if (!ffmpegdec->direct_rendering ||
++      (ffmpegdec->context && ffmpegdec->context->pix_fmt == AV_PIX_FMT_VULKAN))
+     return FALSE;
+
+   oclass = GST_FFMPEGVIDDEC_GET_CLASS (ffmpegdec);
+@@ -1147,7 +1178,8 @@
+     GST_DEBUG_OBJECT (ffmpegdec, "storing opaque %p", dframe);
+   }
+
+-  if (!gst_ffmpegviddec_can_direct_render (ffmpegdec))
++  if (picture->format == AV_PIX_FMT_VULKAN
++      || !gst_ffmpegviddec_can_direct_render (ffmpegdec))
+     goto no_dr;
+
+   gst_ffmpegviddec_ensure_internal_pool (ffmpegdec, picture,
+@@ -1227,6 +1259,24 @@
+      * when our data can be freed. Just putting our data into the first free
+      * buffer might not work if there are too many allocated already
+      */
++    if (picture->format == AV_PIX_FMT_VULKAN) {
++      if (ret >= 0) {
++        AVBufferRef *buffer = picture->buf[0];
++        AVBufferRef *wrapper = av_buffer_create (buffer->data, buffer->size,
++            dummy_free_buffer, dframe, AV_BUFFER_FLAG_READONLY);
++
++        if (wrapper) {
++          dframe->avbuffer = buffer;
++          picture->buf[0] = wrapper;
++          return 0;
++        }
++        ret = AVERROR (ENOMEM);
++      }
++      picture->opaque = NULL;
++      gst_ffmpegviddec_video_frame_free (ffmpegdec, dframe);
++      return ret;
++    }
++
+     if (picture->buf[0]) {
+       dframe->avbuffer = picture->buf[0];
+       picture->buf[0] =
+@@ -1919,10 +1969,11 @@
+
+ /* get an outbuf buffer with the current picture */
+ static GstFlowReturn
+-get_output_buffer (GstFFMpegVidDec * ffmpegdec, GstVideoCodecFrame * frame)
++get_output_buffer (GstFFMpegVidDec * ffmpegdec, GstVideoCodecFrame * frame,
++    const AVFrame * picture)
+ {
+   GstFlowReturn ret = GST_FLOW_OK;
+-  AVFrame pic, *outpic;
++  AVFrame pic;
+   GstVideoFrame vframe;
+   GstVideoInfo *info;
+   guint c;
+@@ -1962,9 +2013,7 @@
+     }
+   }
+
+-  outpic = ffmpegdec->picture;
+-
+-  if (av_frame_copy (&pic, outpic) != 0) {
++  if (av_frame_copy (&pic, picture) != 0) {
+     GST_ERROR_OBJECT (ffmpegdec, "Failed to copy output frame");
+     ret = GST_FLOW_ERROR;
+   }
+@@ -2013,6 +2062,8 @@
+   GstVideoCodecFrame *output_frame;
+   GstFFMpegVidDecVideoFrame *out_dframe;
+   GstBufferPool *pool;
++  AVFrame *picture = ffmpegdec->picture;
++  AVFrame *download = NULL;
+
+   if (G_UNLIKELY (!ffmpegdec->context))
+     goto no_codec;
+@@ -2044,6 +2095,29 @@
+     GST_VIDEO_DECODER_ERROR (ffmpegdec, 1, STREAM, DECODE, (NULL),
+         ("Video decoding error"), *ret);
+     goto beach;
++  }
++
++  if (picture->format == AV_PIX_FMT_VULKAN) {
++    download = av_frame_alloc ();
++    res = download ? av_hwframe_transfer_data (download, picture, 0)
++        : AVERROR (ENOMEM);
++    if (res >= 0)
++      res = av_frame_copy_props (download, picture);
++    if (res >= 0)
++      res = av_frame_apply_cropping (download, AV_FRAME_CROP_UNALIGNED);
++    if (res < 0) {
++      GST_VIDEO_DECODER_ERROR (ffmpegdec, 1, STREAM, DECODE,
++          ("Failed to download Vulkan video frame"), ("%s", av_err2str (res)),
++          *ret);
++      av_frame_unref (picture);
++      goto beach;
++    }
++
++    if (!ffmpegdec->output_state || ffmpegdec->pic_pix_fmt != download->format)
++      GST_INFO_OBJECT (ffmpegdec, "Decoding H.264 with Vulkan Video");
++
++    /* Keep the original picture alive while using its codec frame. */
++    picture = download;
+   }
+
+   got_frame = TRUE;
+@@ -2119,16 +2193,16 @@
+       !!(ffmpegdec->picture->flags & AV_FRAME_FLAG_CORRUPT));
+
+   if (!gst_ffmpegviddec_negotiate (ffmpegdec, ffmpegdec->context,
+-          ffmpegdec->picture, GST_BUFFER_FLAGS (output_frame->input_buffer)))
++          picture, GST_BUFFER_FLAGS (output_frame->input_buffer)))
+     goto negotiation_error;
+
+   pool = gst_video_decoder_get_buffer_pool (GST_VIDEO_DECODER (ffmpegdec));
+   if (G_UNLIKELY (output_frame->output_buffer == NULL)) {
+-    *ret = get_output_buffer (ffmpegdec, output_frame);
++    *ret = get_output_buffer (ffmpegdec, output_frame, picture);
+   } else if (G_UNLIKELY (output_frame->output_buffer->pool != pool)) {
+     GstBuffer *tmp = output_frame->output_buffer;
+     output_frame->output_buffer = NULL;
+-    *ret = get_output_buffer (ffmpegdec, output_frame);
++    *ret = get_output_buffer (ffmpegdec, output_frame, picture);
+     gst_buffer_unref (tmp);
+   }
+ #ifndef G_DISABLE_ASSERT
+@@ -2273,6 +2347,7 @@
+   GST_VIDEO_DECODER_STREAM_LOCK (ffmpegdec);
+
+ beach:
++  av_frame_free (&download);
+   GST_DEBUG_OBJECT (ffmpegdec, "return flow %s, got frame: %d",
+       gst_flow_get_name (*ret), got_frame);
+   return got_frame;
+@@ -2281,8 +2356,9 @@
+ no_output:
+   {
+     GST_DEBUG_OBJECT (ffmpegdec, "no output buffer");
+-    GST_VIDEO_CODEC_FRAME_FLAG_UNSET (input_frame,
+-        GST_FFMPEG_VIDEO_CODEC_FRAME_FLAG_ALLOCATED);
++    if (input_frame)
++      GST_VIDEO_CODEC_FRAME_FLAG_UNSET (input_frame,
++          GST_FFMPEG_VIDEO_CODEC_FRAME_FLAG_ALLOCATED);
+     gst_video_decoder_drop_frame (GST_VIDEO_DECODER (ffmpegdec), output_frame);
+     goto beach;
+   }

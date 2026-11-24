@@ -69,6 +69,7 @@ What does Proton Wineland offer?
 
 - **Video and media playback.** Compatibility work in Windows Media Foundation
   and the supporting media components, including launcher and in-game video.
+  H.264 video in Wine's media stack uses Vulkan decoding when supported.
 
 - **Performance diagnostics.** A shared HUD for DXVK and VKD3D-Proton with
   FPS, lows, hardware telemetry, renderer and driver information, presentation
