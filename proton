@@ -986,6 +986,12 @@ class CompatData:
             self.upgrade_pfx(old_ver)
 
             if not file_exists(self.creation_sync_guard, follow_symlinks=False):
+                # config_info lives outside pfx and can survive its removal.
+                try:
+                    os.unlink(self.config_info_file)
+                except FileNotFoundError:
+                    pass
+
                 makedirs(self.prefix_dir + "/drive_c")
                 set_dir_casefold_bit(self.prefix_dir + "/drive_c")
 
